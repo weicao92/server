@@ -8915,7 +8915,7 @@ void add_join_natural(TABLE_LIST *a, TABLE_LIST *b, List<String> *using_fields,
           pointer - thread found, and its LOCK_thd_kill is locked.
 */
 
-THD *find_thread_by_id(longlong id, bool query_id)
+THD *find_thread_by_id(longlong id, bool query_id, bool lock_thd_data)
 {
   THD *tmp;
   mysql_mutex_lock(&LOCK_thread_count); // For unlink from list
@@ -8926,6 +8926,7 @@ THD *find_thread_by_id(longlong id, bool query_id)
       continue;
     if (id == (query_id ? tmp->query_id : (longlong) tmp->thread_id))
     {
+      if (lock_thd_data) mysql_mutex_lock(&tmp->LOCK_thd_data);
       mysql_mutex_lock(&tmp->LOCK_thd_kill);    // Lock from delete
       break;
     }

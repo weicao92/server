@@ -70,6 +70,7 @@ struct xid_t;
 struct wsrep;
 struct wsrep_ws_handle;
 struct wsrep_buf;
+typedef struct wsrep_kill wsrep_kill_t;
 
 extern struct wsrep_service_st {
   struct wsrep *              (*get_wsrep_func)();
@@ -92,6 +93,7 @@ extern struct wsrep_service_st {
   bool                        (*wsrep_prepare_key_func)(const unsigned char*, size_t, const unsigned char*, size_t, struct wsrep_buf*, size_t*);
   enum wsrep_trx_status       (*wsrep_run_wsrep_commit_func)(THD *thd, bool all);
   void                        (*wsrep_thd_LOCK_func)(THD *thd);
+  void                        (*wsrep_LOCK_func)(THD* thd);
   void                        (*wsrep_thd_UNLOCK_func)(THD *thd);
   void                        (*wsrep_thd_awake_func)(THD *thd, my_bool signal);
   enum wsrep_conflict_state   (*wsrep_thd_conflict_state_func)(MYSQL_THD, my_bool);
@@ -116,7 +118,8 @@ extern struct wsrep_service_st {
   int                         (*wsrep_trx_order_before_func)(MYSQL_THD, MYSQL_THD);
   void                        (*wsrep_unlock_rollback_func)();
   void                        (*wsrep_set_data_home_dir_func)(const char *data_dir);
-  my_bool                     (*wsrep_thd_is_applier_func)(MYSQL_THD);
+  my_bool                     (*wsrep_thd_is_applier_func)(MYSQL_THD thd);
+  bool                        (*wsrep_enqueue_background_kill_func)(wsrep_kill_t);
 } *wsrep_service;
 
 #ifdef MYSQL_DYNAMIC_PLUGIN
@@ -140,6 +143,7 @@ extern struct wsrep_service_st {
 #define wsrep_prepare_key(A,B,C,D,E,F) wsrep_service->wsrep_prepare_key_func(A,B,C,D,E,F)
 #define wsrep_run_wsrep_commit(T,A) wsrep_service->wsrep_run_wsrep_commit_func(T,A)
 #define wsrep_thd_LOCK(T) wsrep_service->wsrep_thd_LOCK_func(T)
+#define wsrep_LOCK(T) wsrep_service->wsrep_LOCK_func(T)
 #define wsrep_thd_UNLOCK(T) wsrep_service->wsrep_thd_UNLOCK_func(T)
 #define wsrep_thd_awake(T,S) wsrep_service->wsrep_thd_awake_func(T,S)
 #define wsrep_thd_conflict_state(T,S) wsrep_service->wsrep_thd_conflict_state_func(T,S)
@@ -165,6 +169,7 @@ extern struct wsrep_service_st {
 #define wsrep_unlock_rollback() wsrep_service->wsrep_unlock_rollback_func()
 #define wsrep_set_data_home_dir(A) wsrep_service->wsrep_set_data_home_dir_func(A)
 #define wsrep_thd_is_applier(T) wsrep_service->wsrep_thd_is_applier_func(T)
+#define wsrep_enqueue_background_kill(T) wsrep_service->wsrep_enqueue_background_kill_func(T);
 
 #define wsrep_debug get_wsrep_debug()
 #define wsrep_log_conflicts get_wsrep_log_conflicts()
@@ -222,6 +227,7 @@ void wsrep_aborting_thd_enqueue(THD *thd);
 void wsrep_lock_rollback();
 void wsrep_post_commit(THD* thd, bool all);
 void wsrep_thd_LOCK(THD *thd);
+void wsrep_LOCK(THD *thd);
 void wsrep_thd_UNLOCK(THD *thd);
 void wsrep_thd_awake(THD *thd, my_bool signal);
 void wsrep_thd_set_conflict_state(THD *thd, enum wsrep_conflict_state state);
@@ -229,6 +235,7 @@ bool wsrep_thd_ignore_table(THD *thd);
 void wsrep_unlock_rollback();
 void wsrep_set_data_home_dir(const char *data_dir);
 my_bool wsrep_thd_is_applier(MYSQL_THD thd);
+bool wsrep_enqueue_background_kill(wsrep_kill_t);
 #endif
 
 #ifdef __cplusplus

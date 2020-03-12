@@ -16,6 +16,7 @@
 #include "mariadb.h"
 #include <sql_class.h>
 #include <mysql/service_wsrep.h>
+#include "wsrep_mysqld.h"
 
 my_bool wsrep_thd_is_BF(THD *, my_bool)
 { return 0; }
@@ -85,6 +86,9 @@ void wsrep_post_commit(THD*, bool)
 
 enum wsrep_trx_status wsrep_run_wsrep_commit(THD *, bool)
 { return WSREP_TRX_ERROR; }
+
+void wsrep_LOCK(THD *)
+{ }
 
 void wsrep_thd_LOCK(THD *)
 { }
@@ -159,3 +163,7 @@ void wsrep_set_data_home_dir(const char *)
 
 my_bool wsrep_thd_is_applier(MYSQL_THD thd)
 { return false; }
+
+bool wsrep_enqueue_background_kill(wsrep_kill_t item)
+{ return false;}
+

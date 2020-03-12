@@ -3124,6 +3124,7 @@ int fill_show_explain(THD *thd, TABLE_LIST *table, COND *cond)
   if ((tmp= find_thread_by_id(thread_id)))
   {
     Security_context *tmp_sctx= tmp->security_ctx;
+
     /*
       If calling_user==NULL, calling thread has SUPER or PROCESS
       privilege, and so can do SHOW EXPLAIN on any user.
