@@ -501,7 +501,8 @@ bool Sql_cmd_alter_table_exchange_partition::
   MDL_ticket *swap_table_mdl_ticket= NULL;
   MDL_ticket *part_table_mdl_ticket= NULL;
   uint table_counter;
-  bool error= TRUE;
+  bool error= TRUE, force_if_exists= 0;
+  ulonglong save_option_bits= thd->variables.option_bits;
   DBUG_ENTER("mysql_exchange_partition");
   DBUG_ASSERT(alter_info->partition_flags & ALTER_PARTITION_EXCHANGE);
 
@@ -529,13 +530,45 @@ bool Sql_cmd_alter_table_exchange_partition::
   table_list->mdl_request.set_type(MDL_SHARED_NO_WRITE);
   if (unlikely(open_tables(thd, &table_list, &table_counter, 0,
                            &alter_prelocking_strategy)))
+  {
+    if (thd->lex->if_exists() &&
+        thd->get_stmt_da()->sql_errno() == ER_NO_SUCH_TABLE)
+    {
+      /*
+        ALTER TABLE IF EXISTS was used on not existing table
+        We have to log the query on a slave as the table may be a shared one
+        from the master and we need to ensure that the next slave can see
+        the statement as this slave may not have the table shared
+      */
+      thd->clear_error();
+      if (thd->slave_thread &&
+          write_bin_log(thd, true, thd->query(), thd->query_length()))
+        DBUG_RETURN(true);
+      my_ok(thd);
+      DBUG_RETURN(false);
+    }
     DBUG_RETURN(true);
+  }
 
   part_table= table_list->table;
   swap_table= swap_table_list->table;
 
+  if (part_table->file->check_if_updates_are_ignored("ALTER"))
+  {
+    if (thd->slave_thread &&
+        write_bin_log_with_if_exists(thd, true, false, true))
+      DBUG_RETURN(true);
+    my_ok(thd);
+    DBUG_RETURN(false);
+  }
+
   if (unlikely(check_exchange_partition(swap_table, part_table)))
     DBUG_RETURN(TRUE);
+
+  /* Add IF EXISTS to binlog if shared table */
+  if (part_table->file->partition_ht()->flags &
+      HTON_TABLE_MAY_NOT_EXIST_ON_SLAVE)
+    force_if_exists= 1;
 
   /* set lock pruning on first table */
   partition_name= alter_info->partition_names.head();
@@ -638,6 +671,9 @@ bool Sql_cmd_alter_table_exchange_partition::
   */
   (void) thd->locked_tables_list.reopen_tables(thd, false);
 
+  if (force_if_exists)
+    thd->variables.option_bits|= OPTION_IF_EXISTS;
+
   if (unlikely((error= write_bin_log(thd, TRUE, thd->query(),
                                      thd->query_length()))))
   {
@@ -648,6 +684,7 @@ bool Sql_cmd_alter_table_exchange_partition::
     (void) exchange_name_with_ddl_log(thd, part_file_name, swap_file_name,
                                       temp_file_name, table_hton);
   }
+  thd->variables.option_bits= save_option_bits;
 
 err:
   if (thd->locked_tables_mode)
@@ -746,7 +783,7 @@ bool Sql_cmd_alter_table_truncate_partition::execute(THD *thd)
   Alter_info *alter_info= &thd->lex->alter_info;
   uint table_counter, i;
   List<String> partition_names_list;
-  bool binlog_stmt;
+  bool binlog_stmt, force_if_exists= 0;
   DBUG_ENTER("Sql_cmd_alter_table_truncate_partition::execute");
 
   /*
@@ -784,16 +821,51 @@ bool Sql_cmd_alter_table_truncate_partition::execute(THD *thd)
 #endif /* WITH_WSREP */
 
   if (open_tables(thd, &first_table, &table_counter, 0))
-    DBUG_RETURN(true);
+  {
+    if (thd->lex->if_exists() &&
+        thd->get_stmt_da()->sql_errno() == ER_NO_SUCH_TABLE)
+    {
+      /*
+        ALTER TABLE IF EXISTS was used on not existing table
+        We have to log the query on a slave as the table may be a shared one
+        from the master and we need to ensure that the next slave can see
+        the statement as this slave may not have the table shared
+      */
+      thd->clear_error();
+      if (thd->slave_thread &&
+          write_bin_log(thd, true, thd->query(), thd->query_length()))
+        DBUG_RETURN(TRUE);
+      my_ok(thd);
+      DBUG_RETURN(FALSE);
+    }
+    DBUG_RETURN(TRUE);
+  }
 
-  if (!first_table->table || first_table->view ||
-      first_table->table->s->db_type() != partition_hton)
+  if (!first_table->table || first_table->view)
   {
     my_error(ER_PARTITION_MGMT_ON_NONPARTITIONED, MYF(0));
     DBUG_RETURN(TRUE);
   }
 
-  
+  if (first_table->table->file->check_if_updates_are_ignored("ALTER"))
+  {
+    if (thd->slave_thread &&
+        write_bin_log_with_if_exists(thd, true, false, 1))
+      DBUG_RETURN(true);
+    my_ok(thd);
+    DBUG_RETURN(false);
+  }
+
+  if (first_table->table->s->db_type() != partition_hton)
+  {
+    my_error(ER_PARTITION_MGMT_ON_NONPARTITIONED, MYF(0));
+    DBUG_RETURN(TRUE);
+  }
+
+  if (first_table->table->file->partition_ht()->flags &
+      HTON_TABLE_MAY_NOT_EXIST_ON_SLAVE)
+    force_if_exists= 1;
+
   /*
     Prune all, but named partitions,
     to avoid excessive calls to external_lock().
@@ -845,9 +917,14 @@ bool Sql_cmd_alter_table_truncate_partition::execute(THD *thd)
   */
   if (likely(error != HA_ERR_WRONG_COMMAND))
   {
+    ulonglong save_option_bits= thd->variables.option_bits;
+    if (force_if_exists)
+      thd->variables.option_bits|= OPTION_IF_EXISTS;
+
     query_cache_invalidate3(thd, first_table, FALSE);
     if (binlog_stmt)
       error|= write_bin_log(thd, !error, thd->query(), thd->query_length());
+    thd->variables.option_bits= save_option_bits;
   }
 
   /*
