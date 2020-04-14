@@ -506,6 +506,7 @@ bool wsrep_cluster_address_update (sys_var *self, THD* thd, enum_var_type type)
   if (wsrep_start_replication())
   {
     wsrep_create_rollbacker();
+    wsrep_create_killer();
     WSREP_DEBUG("Cluster address update creating %ld applier threads running %lu",
 	    wsrep_slave_threads, wsrep_running_applier_threads);
     wsrep_create_appliers(wsrep_slave_threads);
@@ -665,7 +666,7 @@ bool wsrep_desync_check (sys_var *self, THD* thd, set_var* var)
     ret= Wsrep_server_state::instance().provider().desync();
     if (ret) {
       WSREP_WARN ("SET desync failed %d for schema: %s, query: %s", ret,
-                  thd->db.str, WSREP_QUERY(thd));
+                  thd->db.str, wsrep_thd_query(thd));
       my_error (ER_CANNOT_USER, MYF(0), "'desync'", thd->query());
       return true;
     }

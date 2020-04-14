@@ -4,9 +4,7 @@ connection node_2;
 connection node_1;
 connect node_3, 127.0.0.1, root, , test, $NODE_MYPORT_3;
 connection node_3;
-SET GLOBAL wsrep_on=OFF;
 RESET MASTER;
-SET GLOBAL wsrep_on=ON;
 connection node_2a;
 START SLAVE;
 connection node_3;
@@ -41,11 +39,11 @@ connection node_2a;
 SET GLOBAL wsrep_provider_options = 'dbug=';
 SET GLOBAL wsrep_provider_options = 'signal=commit_monitor_master_enter_sync';
 connection node_3;
-SELECT COUNT(*) = 1 FROM t1 WHERE f2 = 'a';
-COUNT(*) = 1
+SELECT COUNT(*) AS EXPECT_1 FROM t1 WHERE f2 = 'a';
+EXPECT_1
 1
-SELECT COUNT(*) = 1 FROM t1 WHERE f2 = 'c';
-COUNT(*) = 1
+SELECT COUNT(*) AS EXPECT_1 FROM t1 WHERE f2 = 'c';
+EXPECT_1
 1
 SELECT * FROM t1;
 f1	f2
@@ -87,8 +85,8 @@ SET GLOBAL wsrep_provider_options = 'signal=commit_monitor_master_enter_sync';
 SET DEBUG_SYNC = "RESET";
 connection node_2a;
 set session wsrep_sync_wait=15;
-SELECT COUNT(*) = 1 FROM test.t1 WHERE f2 = 'e';
-COUNT(*) = 1
+SELECT COUNT(*) AS EXPECT_1 FROM test.t1 WHERE f2 = 'e';
+EXPECT_1
 1
 set session wsrep_sync_wait=0;
 STOP SLAVE;
@@ -96,6 +94,4 @@ RESET SLAVE;
 DROP TABLE t1;
 connection node_3;
 DROP TABLE t1;
-SET GLOBAL wsrep_on=OFF;
 RESET MASTER;
-SET GLOBAL wsrep_on=ON;

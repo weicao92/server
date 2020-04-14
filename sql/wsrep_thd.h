@@ -86,6 +86,7 @@ int wsrep_show_bf_aborts (THD *thd, SHOW_VAR *var, char *buff,
                           enum enum_var_type scope);
 bool wsrep_create_appliers(long threads, bool mutex_protected=false);
 void wsrep_create_rollbacker();
+void wsrep_create_killer();
 
 bool wsrep_bf_abort(const THD*, THD*);
 int  wsrep_abort_thd(THD *bf_thd_ptr, THD *victim_thd_ptr, my_bool signal);
@@ -292,7 +293,7 @@ static inline void wsrep_log_thd(const THD *thd,
               (thd->get_stmt_da()->is_error() ? thd->get_stmt_da()->message() : "")
 #ifdef WSREP_THD_LOG_QUERIES
               , thd->lex->sql_command,
-              WSREP_QUERY(thd)
+              wsrep_thd_query(thd)
 #endif /* WSREP_OBSERVER_LOG_QUERIES */
               );
 }

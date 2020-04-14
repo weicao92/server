@@ -402,6 +402,10 @@ static char* my_fgets (char* buf, size_t buf_len, FILE* stream)
        size_t len= strlen(ret);
        if (len > 0 && ret[len - 1] == '\n') ret[len - 1]= '\0';
    }
+   else
+   {
+       WSREP_ERROR("Error reading from stream is: %s", strerror(errno));
+   }
 
    return ret;
 }

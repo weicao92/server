@@ -116,14 +116,14 @@ int Wsrep_client_service::prepare_data_for_replication()
                   "affected rows: %llu, "
                   "changed tables: %d, "
                   "sql_log_bin: %d",
-                  WSREP_QUERY(m_thd),
+                  wsrep_thd_query(m_thd),
                   m_thd->get_stmt_da()->affected_rows(),
                   stmt_has_updated_trans_table(m_thd),
                   m_thd->variables.sql_log_bin);
     }
     else
     {
-      WSREP_DEBUG("empty rbr buffer, query: %s", WSREP_QUERY(m_thd));
+      WSREP_DEBUG("empty rbr buffer, query: %s", wsrep_thd_query(m_thd));
     }
   }
   DBUG_RETURN(0);

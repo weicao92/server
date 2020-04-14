@@ -43,6 +43,7 @@ enum Wsrep_service_key_type
 struct xid_t;
 struct wsrep_ws_handle;
 struct wsrep_buf;
+typedef struct wsrep_kill wsrep_kill_t;
 
 /* Must match to definition in sql/mysqld.h */
 typedef int64 query_id_t;
@@ -84,6 +85,7 @@ extern struct wsrep_service_st {
   my_bool                     (*wsrep_get_debug_func)();
   void                        (*wsrep_commit_ordered_func)(MYSQL_THD thd);
   my_bool                     (*wsrep_thd_is_applying_func)(const MYSQL_THD thd);
+  bool                        (*wsrep_enqueue_background_kill_func)(wsrep_kill_t);
 } *wsrep_service;
 
 #define MYSQL_SERVICE_WSREP_INCLUDED
@@ -124,6 +126,7 @@ extern struct wsrep_service_st {
 #define wsrep_get_debug() wsrep_service->wsrep_get_debug_func()
 #define wsrep_commit_ordered(T) wsrep_service->wsrep_commit_ordered_func(T)
 #define wsrep_thd_is_applying(T) wsrep_service->wsrep_thd_is_applying_func(T)
+#define wsrep_enqueue_background_kill(T) wsrep_service->wsrep_enqueue_background_kill_func(T);
 
 #else
 
@@ -147,6 +150,7 @@ my_bool get_wsrep_recovery();
 void wsrep_thd_auto_increment_variables(THD *thd, unsigned long long *offset, unsigned long long *increment);
 bool wsrep_thd_ignore_table(MYSQL_THD thd);
 void wsrep_set_data_home_dir(const char *data_dir);
+bool wsrep_enqueue_background_kill(wsrep_kill_t);
 
 /* from mysql wsrep-lib */
 #include "my_global.h"

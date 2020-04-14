@@ -6,6 +6,7 @@ FROM threads
 WHERE name LIKE 'thread/sql/wsrep%'
 ORDER BY name;
 name	thread/sql/wsrep_applier_thread
+name	thread/sql/wsrep_killer_thread
 name	thread/sql/wsrep_rollbacker_thread
 use test;
 create table t1 (a int not null primary key) engine=innodb;
@@ -18,6 +19,7 @@ name	wait/synch/mutex/sql/LOCK_wsrep_desync
 name	wait/synch/mutex/sql/LOCK_wsrep_donor_monitor
 name	wait/synch/mutex/sql/LOCK_wsrep_group_commit
 name	wait/synch/mutex/sql/LOCK_wsrep_joiner_monitor
+name	wait/synch/mutex/sql/LOCK_wsrep_kill
 name	wait/synch/mutex/sql/LOCK_wsrep_ready
 name	wait/synch/mutex/sql/LOCK_wsrep_replaying
 name	wait/synch/mutex/sql/LOCK_wsrep_slave_threads
@@ -28,6 +30,7 @@ name	wait/synch/mutex/sql/LOCK_wsrep_sst_init
 select name from cond_instances where name like 'wait/synch/cond/sql/COND_wsrep%' order by name;
 name	wait/synch/cond/sql/COND_wsrep_donor_monitor
 name	wait/synch/cond/sql/COND_wsrep_joiner_monitor
+name	wait/synch/cond/sql/COND_wsrep_kill
 name	wait/synch/cond/sql/COND_wsrep_ready
 name	wait/synch/cond/sql/COND_wsrep_replaying
 name	wait/synch/cond/sql/COND_wsrep_sst

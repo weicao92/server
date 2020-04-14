@@ -21,9 +21,7 @@
 #
 --connect node_3, 127.0.0.1, root, , test, $NODE_MYPORT_3
 --connection node_3
-SET GLOBAL wsrep_on=OFF;
 RESET MASTER;
-SET GLOBAL wsrep_on=ON;
 
 --connection node_2a
 #
@@ -111,8 +109,8 @@ SET DEBUG_SYNC = "now SIGNAL signal.wsrep_apply_cb";
 
 --connection node_3
 
-SELECT COUNT(*) = 1 FROM t1 WHERE f2 = 'a';
-SELECT COUNT(*) = 1 FROM t1 WHERE f2 = 'c';
+SELECT COUNT(*) AS EXPECT_1 FROM t1 WHERE f2 = 'a';
+SELECT COUNT(*) AS EXPECT_1 FROM t1 WHERE f2 = 'c';
 SELECT * FROM t1;
 
 --connection node_2a
@@ -188,7 +186,7 @@ SET DEBUG_SYNC = "RESET";
 --connection node_2a
 
 set session wsrep_sync_wait=15;
-SELECT COUNT(*) = 1 FROM test.t1 WHERE f2 = 'e';
+SELECT COUNT(*) AS EXPECT_1 FROM test.t1 WHERE f2 = 'e';
 set session wsrep_sync_wait=0;
 
 STOP SLAVE;
@@ -198,6 +196,5 @@ DROP TABLE t1;
 
 --connection node_3
 DROP TABLE t1;
-SET GLOBAL wsrep_on=OFF;
 RESET MASTER;
-SET GLOBAL wsrep_on=ON;
+

@@ -5140,8 +5140,6 @@ static void innobase_kill_query(handlerton*, THD* thd, enum thd_kill_levels)
 		/* if victim has been signaled by BF thread and/or aborting
 		   is already progressing, following query aborting is not necessary
 		   any more.
-		   Also, BF thread should own trx mutex for the victim, which would
-		   conflict with trx_mutex_enter() below
 		*/
 		DBUG_VOID_RETURN;
 	}
@@ -18690,41 +18688,29 @@ static struct st_mysql_storage_engine innobase_storage_engine=
 { MYSQL_HANDLERTON_INTERFACE_VERSION };
 
 #ifdef WITH_WSREP
-void
-wsrep_abort_slave_trx(
-/*==================*/
-	wsrep_seqno_t bf_seqno,
-	wsrep_seqno_t victim_seqno)
-{
-	WSREP_ERROR("Trx %lld tries to abort slave trx %lld. This could be "
-		"caused by:\n\t"
-		"1) unsupported configuration options combination, please check documentation.\n\t"
-		"2) a bug in the code.\n\t"
-		"3) a database corruption.\n Node consistency compromized, "
-		"need to abort. Restart the node to resync with cluster.",
-		(long long)bf_seqno, (long long)victim_seqno);
-	abort();
-}
-/*******************************************************************//**
-This function is used to kill one transaction in BF. */
+/** This function is used to kill one transaction in BF.
+@param[in]	bf_thd_ptr	BF THD
+@param[in]	bf_trx		BF transaction
+@param[in]	victim_trx	Victim to be killed
+@param[in]	signal		signal victim? */
 UNIV_INTERN
 int
 wsrep_innobase_kill_one_trx(
-/*========================*/
-	void * const bf_thd_ptr,
-	const trx_t * const bf_trx,
-	trx_t *victim_trx,
-	ibool signal)
+	void* const		bf_thd_ptr,
+	const trx_t* const	bf_trx,
+	trx_t* 			victim_trx,
+	bool 			signal)
 {
         ut_ad(lock_mutex_own());
         ut_ad(trx_mutex_own(victim_trx));
-        ut_ad(bf_thd_ptr);
-        ut_ad(victim_trx);
+        ut_a(bf_thd_ptr);
+        ut_a(victim_trx);
 
 	DBUG_ENTER("wsrep_innobase_kill_one_trx");
-	THD *bf_thd       = bf_thd_ptr ? (THD*) bf_thd_ptr : NULL;
+
+	THD *bf_thd       = (THD *) bf_thd_ptr;
 	THD *thd          = (THD *) victim_trx->mysql_thd;
-	int64_t bf_seqno  = (bf_thd) ? wsrep_thd_trx_seqno(bf_thd) : 0;
+	wsrep_kill_t item;
 
 	if (!thd) {
 		DBUG_PRINT("wsrep", ("no thd for conflicting lock"));
@@ -18732,47 +18718,22 @@ wsrep_innobase_kill_one_trx(
 		DBUG_RETURN(1);
 	}
 
-	if (!bf_thd) {
-		DBUG_PRINT("wsrep", ("no BF thd for conflicting lock"));
-		WSREP_WARN("no BF THD for trx: " TRX_ID_FMT,
-			   bf_trx ? bf_trx->id : 0);
-		DBUG_RETURN(1);
+	/* Actual processing of the victim kill is handled later
+	on background thread. At this point we may not hold
+	LOCK_thd_data mutex as we are already holding lock sys
+	and trx mutex. */
+	item.victim_thd = thd;
+	item.victim_id = victim_trx->id;
+	item.bf_thd = bf_thd;
+	item.bf_id = bf_trx ? bf_trx->id : TRX_ID_MAX;
+	item.signal = signal;
+	item.wait_lock = (victim_trx->lock.wait_lock ? true : false);
+
+	/* If victim itself is waiting a lock, cancel wait lock. */
+	if (victim_trx->lock.wait_lock) {
+		lock_cancel_waiting_and_release(victim_trx->lock.wait_lock);
 	}
-	WSREP_LOG_CONFLICT(bf_thd, thd, TRUE);
-	wsrep_thd_LOCK(thd);
-	WSREP_DEBUG("BF kill (" ULINTPF ", seqno: " INT64PF
-		    "), victim: (%lu) trx: " TRX_ID_FMT,
-		    signal, bf_seqno,
-		    thd_get_thread_id(thd),
-		    victim_trx->id);
-
-	WSREP_DEBUG("Aborting query: %s conf %s trx: %lld",
-		    (thd && wsrep_thd_query(thd)) ? wsrep_thd_query(thd) : "void",
-		    wsrep_thd_transaction_state_str(thd),
-		    wsrep_thd_transaction_id(thd));
-
-	/*
-	 * we mark with was_chosen_as_deadlock_victim transaction,
-	 * which is already marked as BF victim
-	 * lock_sys is held until this vicitm has aborted
-	 */
-	victim_trx->lock.was_chosen_as_wsrep_victim = TRUE;
-
-	wsrep_thd_UNLOCK(thd);
-	if (wsrep_thd_bf_abort(bf_thd, thd, signal))
-	{
-		if (victim_trx->lock.wait_lock) {
-			WSREP_DEBUG("victim has wait flag: %lu",
-				    thd_get_thread_id(thd));
-			lock_t*  wait_lock = victim_trx->lock.wait_lock;
-
-			if (wait_lock) {
-				WSREP_DEBUG("canceling wait lock");
-				victim_trx->lock.was_chosen_as_deadlock_victim= TRUE;
-				lock_cancel_waiting_and_release(wait_lock);
-			}
-		}
-	}
+	wsrep_enqueue_background_kill(item);
 
 	DBUG_RETURN(0);
 }
@@ -18788,10 +18749,13 @@ wsrep_abort_transaction(
 {
 	DBUG_ENTER("wsrep_innobase_abort_thd");
 
-	trx_t* victim_trx	= thd_to_trx(victim_thd);
-	trx_t* bf_trx		= (bf_thd) ? thd_to_trx(bf_thd) : NULL;
+	ut_a(bf_thd);
+	ut_a(victim_thd);
 
-	WSREP_DEBUG("abort transaction: BF: %s victim: %s victim conf: %s",
+	trx_t* victim_trx	= thd_to_trx(victim_thd);
+	trx_t* bf_trx		= thd_to_trx(bf_thd);
+
+	WSREP_DEBUG("Abort transaction: BF: %s victim: %s victim conf: %s",
 			wsrep_thd_query(bf_thd),
 			wsrep_thd_query(victim_thd),
 			wsrep_thd_transaction_state_str(victim_thd));
@@ -18799,8 +18763,10 @@ wsrep_abort_transaction(
 	if (victim_trx) {
 		lock_mutex_enter();
 		trx_mutex_enter(victim_trx);
-		int rcode= wsrep_innobase_kill_one_trx(bf_thd, bf_trx,
-						       victim_trx, signal);
+		int rcode = wsrep_innobase_kill_one_trx(bf_thd,
+							bf_trx,
+                                                        victim_trx,
+							static_cast<bool>(signal));
 		trx_mutex_exit(victim_trx);
 		lock_mutex_exit();
 		wsrep_srv_conc_cancel_wait(victim_trx);

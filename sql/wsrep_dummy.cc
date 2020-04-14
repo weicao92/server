@@ -16,6 +16,7 @@
 #include "mariadb.h"
 #include <sql_class.h>
 #include <mysql/service_wsrep.h>
+#include "wsrep_mysqld.h"
 
 my_bool wsrep_thd_is_BF(const THD *, my_bool)
 { return 0; }
@@ -138,3 +139,7 @@ void wsrep_commit_ordered(THD* )
 
 my_bool wsrep_thd_is_applying(const THD*)
 { return 0;}
+
+bool wsrep_enqueue_background_kill(wsrep_kill_t item)
+{ return false;}
+
