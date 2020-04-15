@@ -2882,14 +2882,13 @@ bool wsrep_enqueue_background_kill(wsrep_kill_t item)
 
   for (it = wsrep_kill_list.begin(); it != wsrep_kill_list.end(); it++)
   {
-    if ((*it).victim_thd == item.victim_thd)
+    if ((*it).victim_thd_id == item.victim_thd_id)
       break;
   }
 
   if(it != wsrep_kill_list.end())
   {
-    WSREP_DEBUG("Thread: %lld query: %s already on kill list",
-		item.victim_thd->thread_id, wsrep_thd_query(item.victim_thd));
+    WSREP_DEBUG("Thread: %lu already on kill list", item.victim_thd_id);
   }
   else
   {

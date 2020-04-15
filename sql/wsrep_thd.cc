@@ -24,7 +24,7 @@
 #include "sql_parse.h"
 #include "sql_base.h" // close_thread_tables()
 #include "mysqld.h"   // start_wsrep_THD();
-#include "wsrep_applier.h"   // start_wsrep_THD();
+#include "sql_show.h" // find_thread_by_id
 #include "mysql/service_wsrep.h"
 #include "debug_sync.h"
 #include "slave.h"
@@ -140,36 +140,59 @@ static bool create_wsrep_THD(Wsrep_thd_args* args, bool mutex_protected)
 static int wsrep_kill(wsrep_kill_t* item)
 {
   bool signal= item->signal;
-  THD* thd= item->victim_thd;
-  THD* bf_thd= item->bf_thd;
-  unsigned long long victim_id= static_cast<unsigned long long>(item->victim_id);
-  unsigned long long bf_id= static_cast<unsigned long long>(item->bf_id);
-  unsigned long victim_thread= thd_get_thread_id(thd);
-  unsigned long bf_thread= thd_get_thread_id(bf_thd);
+  unsigned long long victim_trx_id= static_cast<unsigned long long>(item->victim_trx_id);
+  unsigned long long bf_trx_id= static_cast<unsigned long long>(item->bf_trx_id);
+
+  // Note that find_thread_by_id will acquire LOCK_thd_kill mutex
+  // for thd if it's found
+  THD* bf_thd= find_thread_by_id(item->bf_thd_id, false);
+
+  if (!bf_thd)
+  {
+    WSREP_ERROR("BF thread: %lu not found", item->bf_thd_id);
+    assert(0);
+  }
+
   long long bf_seqno= wsrep_thd_trx_seqno(bf_thd);
-  long long victim_seqno= wsrep_thd_trx_seqno(thd);
-
-  wsrep_thd_LOCK(thd);
-
-  WSREP_LOG_CONFLICT(bf_thd, thd, TRUE);
 
   WSREP_DEBUG("Aborter %s trx_id: %llu thread: %ld "
               "seqno: %lld client_state: %s client_mode: %s transaction_mode: %s "
               "query: %s",
               wsrep_thd_is_BF(bf_thd, false) ? "BF" : "normal",
-              bf_id,
-              bf_thread,
+              bf_trx_id,
+              item->bf_thd_id,
               bf_seqno,
               wsrep_thd_client_state_str(bf_thd),
               wsrep_thd_client_mode_str(bf_thd),
               wsrep_thd_transaction_state_str(bf_thd),
               wsrep_thd_query(bf_thd));
 
+  // Note that we need to release LOCK_thd_kill mutex from BF thread
+  // to obey safe mutex ordering of LOCK_thread_count -> LOCK_thd_kill
+  // that both are taken on find_thread_by_id
+  mysql_mutex_unlock(&bf_thd->LOCK_thd_kill);
+
+  THD* thd= find_thread_by_id(item->victim_thd_id, false);
+
+  if (!thd)
+  {
+    WSREP_DEBUG("Victim thread: %lu not found", item->victim_thd_id);
+    return(0);
+  }
+
+  mysql_mutex_unlock(&thd->LOCK_thd_kill);
+  wsrep_thd_LOCK(thd);
+
+  WSREP_LOG_CONFLICT(bf_thd, thd, TRUE);
+
+  unsigned long victim_thread= item->victim_thd_id;
+  long long victim_seqno= wsrep_thd_trx_seqno(thd);
+
   WSREP_DEBUG("Victim %s trx_id: %llu thread: %ld "
               "seqno: %lld client_state: %s  client_mode: %s transaction_mode: %s "
               "query: %s",
               wsrep_thd_is_BF(thd, false) ? "BF" : "normal",
-              victim_id,
+              victim_trx_id,
               victim_thread,
               victim_seqno,
               wsrep_thd_client_state_str(thd),
@@ -177,17 +200,13 @@ static int wsrep_kill(wsrep_kill_t* item)
               wsrep_thd_transaction_state_str(thd),
               wsrep_thd_query(thd));
 
-  DBUG_EXECUTE_IF("sync.wsrep_after_BF_victim_lock",
-  {
-    const char act[]=
-      "now "
-      "wait_for signal.wsrep_after_BF_victim_lock";
-      DBUG_ASSERT(!debug_sync_set_action(bf_thd,
-                  STRING_WITH_LEN(act)));
-  };);
+
+
+
 
   wsrep_thd_UNLOCK(thd);
   wsrep_thd_bf_abort(bf_thd, thd, signal);
+
 
   return(0);
 }
@@ -221,7 +240,10 @@ static void wsrep_process_kill(THD *thd,
     while (!wsrep_kill_list.empty())
     {
       wsrep_kill_t to_be_killed= wsrep_kill_list.front();
+      // Release list mutex while we kill one thread
+      mysql_mutex_unlock(&LOCK_wsrep_kill);
       wsrep_kill(&to_be_killed);
+      mysql_mutex_lock(&LOCK_wsrep_kill);
       wsrep_kill_list.pop_front();
     }
   }

@@ -18701,10 +18701,10 @@ wsrep_innobase_kill_one_trx(
 	trx_t* 			victim_trx,
 	bool 			signal)
 {
+        ut_ad(victim_trx);
+        ut_ad(bf_thd_ptr);
         ut_ad(lock_mutex_own());
         ut_ad(trx_mutex_own(victim_trx));
-        ut_a(bf_thd_ptr);
-        ut_a(victim_trx);
 
 	DBUG_ENTER("wsrep_innobase_kill_one_trx");
 
@@ -18722,10 +18722,10 @@ wsrep_innobase_kill_one_trx(
 	on background thread. At this point we may not hold
 	LOCK_thd_data mutex as we are already holding lock sys
 	and trx mutex. */
-	item.victim_thd = thd;
-	item.victim_id = victim_trx->id;
-	item.bf_thd = bf_thd;
-	item.bf_id = bf_trx ? bf_trx->id : TRX_ID_MAX;
+	item.victim_thd_id = thd_get_thread_id(thd);
+	item.victim_trx_id = victim_trx->id;
+	item.bf_thd_id = thd_get_thread_id(bf_thd);
+	item.bf_trx_id = bf_trx ? bf_trx->id : TRX_ID_MAX;
 	item.signal = signal;
 	item.wait_lock = (victim_trx->lock.wait_lock ? true : false);
 

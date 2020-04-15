@@ -16,13 +16,16 @@
 #ifndef WSREP_MYSQLD_H
 #define WSREP_MYSQLD_H
 
-#include <wsrep.h>
+#include <my_config.h>
+#include <stdint.h>
+#include <mysql/plugin.h>
+#include <mysql/service_wsrep.h>
 
 typedef struct wsrep_kill {
-  THD*                 victim_thd;
-  THD*                 bf_thd;
-  uint64_t             victim_id;
-  uint64_t             bf_id;
+  unsigned long        victim_thd_id;
+  unsigned long        bf_thd_id;
+  uint64_t             victim_trx_id;
+  uint64_t             bf_trx_id;
   bool                 signal;
   bool                 wait_lock;
 } wsrep_kill_t;
