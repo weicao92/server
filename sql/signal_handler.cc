@@ -113,6 +113,12 @@ extern "C" sig_handler handle_fatal_signal(int sig)
   bool print_invalid_query_pointer= false;
 #endif
 
+  if (!my_init_done)
+  {
+    my_safe_printf_stderr("my_end() has already been called. Will not do stack trace or core dump\n");
+    goto end;
+  }
+
   if (segfaulted)
   {
     my_safe_printf_stderr("Fatal " SIGNAL_FMT " while backtracing\n", sig);
