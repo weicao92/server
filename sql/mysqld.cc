@@ -1938,9 +1938,7 @@ static void mysqld_exit(int exit_code)
   if (!opt_debugging && !my_disable_leak_check && exit_code == 0 &&
       debug_assert_on_not_freed_memory)
   {
-#ifdef SAFEMALLOC
-    sf_report_leaked_memory(0);
-#endif
+    SAFEMALLOC_REPORT_MEMORY(0);
     DBUG_SLOW_ASSERT(global_status_var.global_memory_used == 0);
   }
   cleanup_tls();
