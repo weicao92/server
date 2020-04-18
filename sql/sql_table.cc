@@ -1855,8 +1855,8 @@ bool mysql_write_frm(ALTER_PARTITION_PARAM_TYPE *lpt, uint flags)
       goto end;
     }
 
-    int error= writefrm(shadow_frm_name, lpt->db.str, lpt->table_name.str,
-                        lpt->create_info->tmp_table(), frm.str, frm.length);
+    int error= writefile(shadow_frm_name, lpt->db.str, lpt->table_name.str,
+                         lpt->create_info->tmp_table(), frm.str, frm.length);
     my_free(const_cast<uchar*>(frm.str));
 
     if (unlikely(error) ||

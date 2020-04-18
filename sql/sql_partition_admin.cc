@@ -46,6 +46,16 @@ bool Sql_cmd_partition_unsupported::execute(THD *)
 
 #else
 
+static bool return_with_logging(THD *thd)
+{
+  if (thd->slave_thread &&
+      write_bin_log_with_if_exists(thd, true, false, true))
+    return(true);
+  my_ok(thd);
+  return(false);
+}
+
+
 bool Sql_cmd_alter_table_exchange_partition::execute(THD *thd)
 {
   /* Moved from mysql_execute_command */
@@ -554,13 +564,7 @@ bool Sql_cmd_alter_table_exchange_partition::
   swap_table= swap_table_list->table;
 
   if (part_table->file->check_if_updates_are_ignored("ALTER"))
-  {
-    if (thd->slave_thread &&
-        write_bin_log_with_if_exists(thd, true, false, true))
-      DBUG_RETURN(true);
-    my_ok(thd);
-    DBUG_RETURN(false);
-  }
+    DBUG_RETURN(return_with_logging(thd));
 
   if (unlikely(check_exchange_partition(swap_table, part_table)))
     DBUG_RETURN(TRUE);
@@ -832,11 +836,7 @@ bool Sql_cmd_alter_table_truncate_partition::execute(THD *thd)
         the statement as this slave may not have the table shared
       */
       thd->clear_error();
-      if (thd->slave_thread &&
-          write_bin_log(thd, true, thd->query(), thd->query_length()))
-        DBUG_RETURN(TRUE);
-      my_ok(thd);
-      DBUG_RETURN(FALSE);
+      DBUG_RETURN(return_with_logging(thd));
     }
     DBUG_RETURN(TRUE);
   }
@@ -848,13 +848,7 @@ bool Sql_cmd_alter_table_truncate_partition::execute(THD *thd)
   }
 
   if (first_table->table->file->check_if_updates_are_ignored("ALTER"))
-  {
-    if (thd->slave_thread &&
-        write_bin_log_with_if_exists(thd, true, false, 1))
-      DBUG_RETURN(true);
-    my_ok(thd);
-    DBUG_RETURN(false);
-  }
+    DBUG_RETURN(return_with_logging(thd));
 
   if (first_table->table->s->db_type() != partition_hton)
   {

@@ -629,8 +629,8 @@ int ha_partition::rename_table(const char *from, const char *to)
 
   SYNOPSIS
     create_partitioning_metadata()
-    path                              Full path of new table name
-    old_p                             Full path of old table name
+    path                              Path to the new frm file (without ext)
+    old_p                             Path to the old frm file (without ext)
     create_info                       Create info generated for CREATE TABLE
 
   RETURN VALUE
@@ -646,8 +646,8 @@ int ha_partition::rename_table(const char *from, const char *to)
 */
 
 int ha_partition::create_partitioning_metadata(const char *path,
-                                       const char *old_path,
-                                       chf_create_flags action_flag)
+                                               const char *old_path,
+                                               chf_create_flags action_flag)
 {
   partition_element *part;
   DBUG_ENTER("ha_partition::create_partitioning_metadata");
@@ -2457,12 +2457,10 @@ uint ha_partition::del_ren_table(const char *from, const char *to)
   /* Update .par file in the handlers that supports it */
   if ((*m_file)->ht->create_partitioning_metadata)
   {
-    if (to == NULL)
-      error= (*m_file)->ht->create_partitioning_metadata(NULL, from,
-                                                         CHF_DELETE_FLAG);
-    else
-      error= (*m_file)->ht->create_partitioning_metadata(to, from,
-                                                         CHF_RENAME_FLAG);
+    error= (*m_file)->ht->create_partitioning_metadata(to, from,
+                                                       to == NULL ?
+                                                       CHF_DELETE_FLAG :
+                                                       CHF_RENAME_FLAG);
     DBUG_EXECUTE_IF("failed_create_partitioning_metadata",
                     { my_message_sql(ER_OUT_OF_RESOURCES,"Simulated crash",MYF(0));
                       error= 1;

@@ -43,7 +43,6 @@
 #include "rpl_filter.h"
 #include "sql_cte.h"
 #include "ha_sequence.h"
-#include "ha_partition.h"
 #include "sql_show.h"
 #include "opt_trace.h"
 
@@ -620,12 +619,13 @@ enum open_frm_error open_table_def(THD *thd, TABLE_SHARE *share, uint flags)
                  path);
   if (flags & GTS_FORCE_DISCOVERY)
   {
+    const char *path2= share->normalized_path.str;
     DBUG_ASSERT(flags & GTS_TABLE);
     DBUG_ASSERT(flags & GTS_USE_DISCOVERY);
     /* Delete .frm and .par files */
-    mysql_file_delete_with_symlink(key_file_frm, path, "", MYF(0));
-    strxmov(path, share->normalized_path.str, PAR_EXT, NullS);
-    mysql_file_delete_with_symlink(key_file_frm, path, "", MYF(0));
+    mysql_file_delete_with_symlink(key_file_frm, path2, reg_ext, MYF(0));
+    mysql_file_delete_with_symlink(key_file_partition_ddl_log, path2, PAR_EXT,
+                                   MYF(0));
     file= -1;
   }
   else
@@ -1739,14 +1739,14 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
 
   if (write)
   {
+    frm_created= 1;
+    if (write_frm_image(frm_image, frm_length))
+      goto err;
 #ifdef WITH_PARTITION_STORAGE_ENGINE
     if (par_image)
       if (write_par_image(par_image, par_length))
         goto err;
 #endif
-    frm_created= 1;
-    if (write_frm_image(frm_image, frm_length))
-      goto err;
   }
 
   share->frm_version= frm_image[2];
@@ -3404,8 +3404,8 @@ bool TABLE_SHARE::write_frm_image(const uchar *frm, size_t len)
   char file_name[FN_REFLEN+1];
   strxnmov(file_name, sizeof(file_name)-1, normalized_path.str, reg_ext,
            NullS);
-  return writefrm(file_name, db.str, table_name.str, false,
-                  frm, len);
+  return writefile(file_name, db.str, table_name.str, false,
+                   frm, len);
 }
 
 bool TABLE_SHARE::write_par_image(const uchar *par, size_t len)
@@ -3413,7 +3413,7 @@ bool TABLE_SHARE::write_par_image(const uchar *par, size_t len)
   char file_name[FN_REFLEN+1];
   strxnmov(file_name, sizeof(file_name)-1, normalized_path.str, PAR_EXT,
            NullS);
-  return writefrm(file_name, db.str, table_name.str, false, par, len);
+  return writefile(file_name, db.str, table_name.str, false, par, len);
 }
 
 

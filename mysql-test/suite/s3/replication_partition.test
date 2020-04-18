@@ -1,9 +1,9 @@
 --source include/have_s3.inc
 --source include/have_partition.inc
---source include/master-slave.inc
 --source include/have_binlog_format_mixed.inc
 --source include/have_innodb.inc
 --source include/have_sequence.inc
+--source include/master-slave.inc
 --source create_database.inc
 
 connection slave;

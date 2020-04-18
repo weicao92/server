@@ -113,12 +113,12 @@ int readfrm(const char *name, const uchar **frmdata, size_t *len)
     <> 0    Could not write file. In this case the file is not created
 */
 
-int writefrm(const char *path, const char *db, const char *table,
-             bool tmp_table, const uchar *data, size_t len)
+int writefile(const char *path, const char *db, const char *table,
+              bool tmp_table, const uchar *data, size_t len)
 {
   int error;
   int create_flags= O_RDWR | O_TRUNC;
-  DBUG_ENTER("writefrm");
+  DBUG_ENTER("writefile");
   DBUG_PRINT("enter",("name: '%s' len: %lu ",path, (ulong) len));
 
   if (tmp_table)
@@ -147,7 +147,8 @@ int writefrm(const char *path, const char *db, const char *table,
       my_delete(path, MYF(0));
   }
   DBUG_RETURN(error);
-} /* writefrm */
+} /* writefile */
+
 
 static inline void advance(FILEINFO* &from, FILEINFO* &to,
                            FILEINFO* cur, bool &skip)
@@ -155,7 +156,7 @@ static inline void advance(FILEINFO* &from, FILEINFO* &to,
   if (skip)                   // if not copying
     from= cur;                //   just advance the start pointer
   else                        // if copying
-    if (to == from)           //   but to the same place (not shifting the data)
+    if (to == from)           //   but to the same place, not shifting the data
       from= to= cur;          //     advance both pointers
     else                      //   otherwise
       while (from < cur)      //     have to copy [from...cur) to [to...)
