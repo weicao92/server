@@ -1762,8 +1762,8 @@ uint build_table_shadow_filename(char *buff, size_t bufflen,
                                  ALTER_PARTITION_PARAM_TYPE *lpt)
 {
   char tmp_name[FN_REFLEN];
-  my_snprintf(tmp_name, sizeof (tmp_name), "%s-shadow-%s", tmp_file_prefix,
-              lpt->table_name.str);
+  my_snprintf(tmp_name, sizeof (tmp_name), "%s-shadow-%lx-%s", tmp_file_prefix,
+              (ulong) current_thd->thread_id, lpt->table_name.str);
   return build_table_filename(buff, bufflen, lpt->db.str, tmp_name, "",
                               FN_IS_TMP);
 }
