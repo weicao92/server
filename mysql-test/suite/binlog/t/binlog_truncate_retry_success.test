@@ -1,0 +1,84 @@
+# ==== Purpose ====
+#
+# Test verifies that tc-heuristic-recover=ROLLBACK can be retried.
+#
+# ==== Implementation ====
+#
+# Steps:
+#    0 - Create a table in Innodb storage engine. Insert a row into the table.
+#        During the commit of this DML engine will persist last committed
+#        transaction specific binary log file name and position.
+#    1 - Do an another DML into the table, and simulate a crash in the middle
+#        of DML commit, so that DML is present in binary log but not committed in
+#        the storage engine.
+#    2 - Restart the server using --tc-heuristic-recover=ROLLBACK. Simulate an
+#        error during the binary log rollback operation. Verify appropriate
+#        error is reported in the error log.
+#    3 - Retry the --tc-heuristic-recver=ROLLBACK operation. Verify that
+#        binary log gets truncated as expected.
+#    4 - Verify that global gtid state is according to the rolled back
+#        transaction.
+# ==== References ====
+#
+# MDEV-21117: --tc-heuristic-recover=rollback is not replication safe
+
+
+--source include/have_innodb.inc
+--source include/not_embedded.inc
+--source include/have_log_bin.inc
+--source include/have_debug.inc
+--source include/have_debug_sync.inc
+--source include/have_binlog_format_row.inc
+
+call mtr.add_suppression("Can't init tc log");
+call mtr.add_suppression("Aborting");
+
+RESET MASTER;
+
+CREATE TABLE t1 (a INT PRIMARY KEY, b MEDIUMTEXT) ENGINE=Innodb;
+INSERT INTO t1 VALUES (1,'dummy');
+connect(master1,localhost,root,,);
+connect(master2,localhost,root,,);
+
+--connection master1
+SET DEBUG_SYNC= "commit_after_release_LOCK_log SIGNAL con1_ready WAIT_FOR con1_go";
+send INSERT INTO t1 VALUES (2,'dummy');
+
+--connection master2
+SET DEBUG_SYNC= "now WAIT_FOR con1_ready";
+--echo "List of binary logs"
+--source include/show_binary_logs.inc
+--write_file $MYSQLTEST_VARDIR/tmp/mysqld.1.expect
+wait
+EOF
+
+--source include/kill_mysqld.inc
+--source include/wait_until_disconnected.inc
+
+#
+# Server restart
+#
+--echo TEST 1: Recovery with error
+--error 1
+--exec $MYSQLD_LAST_CMD  --tc-heuristic-recover=ROLLBACK --debug-dbug=d,fault_injection_opening_binlog > $MYSQLTEST_VARDIR/log/mysqld.1.err 2>&1
+--source include/wait_until_disconnected.inc
+
+--echo TEST 2: Recovery without error
+--error 1
+--exec $MYSQLD_LAST_CMD --tc-heuristic-recover=ROLLBACK  > $MYSQLTEST_VARDIR/log/mysqld.1.err 2>&1
+--source include/wait_until_disconnected.inc
+
+--source include/start_mysqld.inc
+
+--echo "One row shoule be present in table"
+SELECT COUNT(*) FROM t1;
+
+--echo "Two gtids should be present 0-1-2"
+SELECT @@GLOBAL.gtid_current_pos;
+
+--echo "Two gtids should be present 0-1-3"
+DROP TABLE t1;
+SELECT @@GLOBAL.gtid_binlog_state;
+
+--disconnect master1
+--disconnect master2
