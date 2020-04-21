@@ -491,8 +491,8 @@ static bool buf_flush_or_remove_page(buf_page_t *bpage, bool flush)
 	} else if (bpage->ready_for_flush()) {
 		/* The following call will release the buffer pool
 		and block mutex. */
-		processed = buf_flush_page(
-			bpage, BUF_FLUSH_SINGLE_PAGE, false);
+		processed = buf_flush_page(bpage, IORequest::SINGLE_PAGE,
+					   false);
 
 		if (processed) {
 			mutex_enter(&buf_pool.mutex);

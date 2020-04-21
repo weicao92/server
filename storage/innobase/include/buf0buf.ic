@@ -242,43 +242,6 @@ buf_page_belongs_to_unzip_LRU(
 	       && buf_page_get_state(bpage) == BUF_BLOCK_FILE_PAGE);
 }
 
-/*********************************************************************//**
-Get the flush type of a page.
-@return flush type */
-UNIV_INLINE
-buf_flush_t
-buf_page_get_flush_type(
-/*====================*/
-	const buf_page_t*	bpage)	/*!< in: buffer page */
-{
-	buf_flush_t	flush_type = (buf_flush_t) bpage->flush_type;
-
-#ifdef UNIV_DEBUG
-	switch (flush_type) {
-	case BUF_FLUSH_LRU:
-	case BUF_FLUSH_LIST:
-	case BUF_FLUSH_SINGLE_PAGE:
-		return(flush_type);
-	case BUF_FLUSH_N_TYPES:
-		ut_error;
-	}
-	ut_error;
-#endif /* UNIV_DEBUG */
-	return(flush_type);
-}
-/*********************************************************************//**
-Set the flush type of a page. */
-UNIV_INLINE
-void
-buf_page_set_flush_type(
-/*====================*/
-	buf_page_t*	bpage,		/*!< in: buffer page */
-	buf_flush_t	flush_type)	/*!< in: flush type */
-{
-	bpage->flush_type = flush_type & 3;
-	ut_ad(buf_page_get_flush_type(bpage) == flush_type);
-}
-
 /** Map a block to a file page.
 @param[in,out]	block	pointer to control block
 @param[in]	page_id	page id */

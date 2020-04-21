@@ -117,7 +117,6 @@ struct buf_page_info_t{
 	unsigned	space_id:32;	/*!< Tablespace ID */
 	unsigned	page_num:32;	/*!< Page number/offset */
 	unsigned	access_time:32;	/*!< Time of first access */
-	unsigned	flush_type:2;	/*!< Flush type */
 	unsigned	io_fix:2;	/*!< type of pending I/O operation */
 	uint32_t	fix_count;	/*!< Count of how manyfold this block
 					is bufferfixed */
@@ -3982,8 +3981,7 @@ i_s_innodb_buffer_page_fill(
 			   fields[IDX_BUFFER_PAGE_TYPE],
 			   i_s_page_type[page_info->page_type].type_str));
 
-		OK(fields[IDX_BUFFER_PAGE_FLUSH_TYPE]->store(
-			   page_info->flush_type, true));
+		OK(fields[IDX_BUFFER_PAGE_FLUSH_TYPE]->store(0, true));
 
 		OK(fields[IDX_BUFFER_PAGE_FIX_COUNT]->store(
 			   page_info->fix_count, true));
@@ -4172,8 +4170,6 @@ i_s_innodb_buffer_page_get_info(
 		page_info->space_id = bpage->id.space();
 
 		page_info->page_num = bpage->id.page_no();
-
-		page_info->flush_type = bpage->flush_type;
 
 		page_info->fix_count = bpage->buf_fix_count;
 
@@ -4404,7 +4400,7 @@ static ST_FIELD_INFO	i_s_innodb_buf_page_lru_fields_info[] =
   Column("PAGE_TYPE", Varchar(64), NULLABLE),
 
 #define IDX_BUF_LRU_PAGE_FLUSH_TYPE	5
-  Column("FLUSH_TYPE", ULonglong(), NOT_NULL),
+  Column("FLUSH_TYPE", ULong(), NOT_NULL),
 
 #define IDX_BUF_LRU_PAGE_FIX_COUNT	6
   Column("FIX_COUNT", ULong(), NOT_NULL),
@@ -4497,8 +4493,7 @@ i_s_innodb_buf_page_lru_fill(
 			   fields[IDX_BUF_LRU_PAGE_TYPE],
 			   i_s_page_type[page_info->page_type].type_str));
 
-		OK(fields[IDX_BUF_LRU_PAGE_FLUSH_TYPE]->store(
-			   page_info->flush_type, true));
+		OK(fields[IDX_BUF_LRU_PAGE_FLUSH_TYPE]->store(0, true));
 
 		OK(fields[IDX_BUF_LRU_PAGE_FIX_COUNT]->store(
 			   page_info->fix_count, true));

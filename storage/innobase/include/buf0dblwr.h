@@ -1,7 +1,7 @@
 /*****************************************************************************
 
 Copyright (c) 1995, 2017, Oracle and/or its affiliates. All Rights Reserved.
-Copyright (c) 2017, MariaDB Corporation.
+Copyright (c) 2017, 2020, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -69,13 +69,8 @@ frees doublewrite buffer. */
 void
 buf_dblwr_free();
 
-/********************************************************************//**
-Updates the doublewrite buffer when an IO request is completed. */
-void
-buf_dblwr_update(
-/*=============*/
-	const buf_page_t*	bpage,	/*!< in: buffer block descriptor */
-	buf_flush_t		flush_type);/*!< in: flush type */
+/** Update the doublewrite buffer on write completion. */
+void buf_dblwr_update(const buf_page_t &bpage, bool single_page);
 /****************************************************************//**
 Determines if a page number is located inside the doublewrite buffer.
 @return TRUE if the location is inside the two blocks of the
@@ -84,14 +79,12 @@ ibool
 buf_dblwr_page_inside(
 /*==================*/
 	ulint	page_no);	/*!< in: page number */
-/********************************************************************//**
-Posts a buffer page for writing. If the doublewrite memory buffer is
-full, calls buf_dblwr_flush_buffered_writes and waits for for free
-space to appear. */
-void
-buf_dblwr_add_to_batch(
-/*====================*/
-	buf_page_t*	bpage);	/*!< in: buffer block to write */
+
+/** Schedule a page write. If the doublewrite memory buffer is full,
+buf_dblwr_flush_buffered_writes() will be invoked to make space.
+@param bpage   buffer pool page to be written
+@param flush   type of flush */
+void buf_dblwr_add_to_batch(buf_page_t *bpage, IORequest::flush_t flush);
 
 /********************************************************************//**
 Flush a batch of writes to the datafiles that have already been
@@ -140,9 +133,6 @@ struct buf_dblwr_t{
 				reserved for single page flushes. */
 	os_event_t	s_event;/*!< event where threads wait for a
 				single page flush slot. Protected by mutex. */
-	bool*		in_use;	/*!< flag used to indicate if a slot is
-				in use. Only used for single page
-				flushes. */
 	bool		batch_running;/*!< set to TRUE if currently a batch
 				is being written from the doublewrite
 				buffer. */
@@ -150,9 +140,11 @@ struct buf_dblwr_t{
 				doublewrite buffer, aligned to an
 				address divisible by srv_page_size
 				(which is required by Windows aio) */
-	buf_page_t**	buf_block_arr;/*!< array to store pointers to
-				the buffer blocks which have been
-				cached to write_buf */
+
+	struct element { buf_page_t* bpage; IORequest::flush_t flush; };
+
+	/** buffer blocks to be written via write_buf */
+	element*	buf_block_arr;
 };
 
 #endif

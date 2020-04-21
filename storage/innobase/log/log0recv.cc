@@ -966,7 +966,7 @@ DECLARE_THREAD(recv_writer_thread)(
 
 		/* Flush pages from end of LRU if required */
 		os_event_reset(recv_sys.flush_end);
-		recv_sys.flush_type = BUF_FLUSH_LRU;
+		recv_sys.flush_lru = true;
 		os_event_set(recv_sys.flush_start);
 		os_event_wait(recv_sys.flush_end);
 
@@ -999,7 +999,7 @@ void recv_sys_t::create()
 		flush_end = os_event_create(0);
 	}
 
-	flush_type = BUF_FLUSH_LRU;
+	flush_lru = true;
 	apply_log_recs = false;
 	apply_batch_on = false;
 
@@ -2702,7 +2702,7 @@ void recv_sys_t::apply(bool last_batch)
     buf_flush_wait_LRU_batch_end();
 
     os_event_reset(flush_end);
-    flush_type = BUF_FLUSH_LIST;
+    flush_lru= false;
     os_event_set(flush_start);
     os_event_wait(flush_end);
 

@@ -373,24 +373,26 @@ static bool buf_tmp_page_decrypt(byte* tmp_frame, byte* src_frame)
 
 /** Decrypt a page.
 @param[in,out]	bpage	Page control block
-@param[in,out]	space	tablespace
+@param[in]	node	data file
 @return whether the operation was successful */
-static bool buf_page_decrypt_after_read(buf_page_t* bpage, fil_space_t* space)
+static bool buf_page_decrypt_after_read(buf_page_t *bpage,
+                                        const fil_node_t &node)
 {
-	ut_ad(space->pending_io());
-	ut_ad(space->id == bpage->id.space());
+	ut_ad(node.space->pending_io());
+	ut_ad(node.space->id == bpage->id.space());
+	const auto flags = node.space->flags;
 
 	byte* dst_frame = bpage->zip.data ? bpage->zip.data :
 		((buf_block_t*) bpage)->frame;
-	bool page_compressed = space->is_compressed()
-		&& buf_page_is_compressed(dst_frame, space->flags);
+	bool page_compressed = node.space->is_compressed()
+		&& buf_page_is_compressed(dst_frame, flags);
 
 	if (bpage->id.page_no() == 0) {
 		/* File header pages are not encrypted/compressed */
 		return (true);
 	}
 
-	if (space->purpose == FIL_TYPE_TEMPORARY
+	if (node.space->purpose == FIL_TYPE_TEMPORARY
 	    && innodb_encrypt_temporary_tables) {
 		buf_tmp_buffer_t* slot = buf_pool.io_buf_reserve();
 		ut_a(slot);
@@ -399,7 +401,7 @@ static bool buf_page_decrypt_after_read(buf_page_t* bpage, fil_space_t* space)
 		if (!buf_tmp_page_decrypt(slot->crypt_buf, dst_frame)) {
 			slot->release();
 			ib::error() << "Encrypted page " << bpage->id
-				    << " in file " << space->chain.start->name;
+				    << " in file " << node.name;
 			return false;
 		}
 
@@ -412,14 +414,14 @@ static bool buf_page_decrypt_after_read(buf_page_t* bpage, fil_space_t* space)
 	also for pages first compressed and then encrypted. */
 
 	buf_tmp_buffer_t* slot;
-	uint key_version = buf_page_get_key_version(dst_frame, space->flags);
+	uint key_version = buf_page_get_key_version(dst_frame, flags);
 
 	if (page_compressed && !key_version) {
 		/* the page we read is unencrypted */
 		/* Find free slot from temporary memory array */
 decompress:
-		if (space->full_crc32()
-		    && buf_page_is_corrupted(true, dst_frame, space->flags)) {
+		if (fil_space_t::full_crc32(flags)
+		    && buf_page_is_corrupted(true, dst_frame, flags)) {
 			return false;
 		}
 
@@ -428,27 +430,26 @@ decompress:
 		slot->allocate();
 
 decompress_with_slot:
-		ut_d(fil_page_type_validate(space, dst_frame));
+		ut_d(fil_page_type_validate(node.space, dst_frame));
 
 		bpage->write_size = fil_page_decompress(
-			slot->crypt_buf, dst_frame, space->flags);
+			slot->crypt_buf, dst_frame, flags);
 		slot->release();
 
 		ut_ad(!bpage->write_size
-		      || fil_page_type_validate(space, dst_frame));
+		      || fil_page_type_validate(node.space, dst_frame));
 
-		ut_ad(space->pending_io());
-
+		ut_ad(node.space->pending_io());
 		return bpage->write_size != 0;
 	}
 
-	if (key_version && space->crypt_data) {
+	if (key_version && node.space->crypt_data) {
 		/* Verify encryption checksum before we even try to
 		decrypt. */
-		if (!buf_page_verify_crypt_checksum(dst_frame, space->flags)) {
+		if (!buf_page_verify_crypt_checksum(dst_frame, flags)) {
 decrypt_failed:
 			ib::error() << "Encrypted page " << bpage->id
-				    << " in file " << space->chain.start->name
+				    << " in file " << node.name
 				    << " looks corrupted; key_version="
 				    << key_version;
 			return false;
@@ -457,17 +458,17 @@ decrypt_failed:
 		slot = buf_pool.io_buf_reserve();
 		ut_a(slot);
 		slot->allocate();
-		ut_d(fil_page_type_validate(space, dst_frame));
+		ut_d(fil_page_type_validate(node.space, dst_frame));
 
 		/* decrypt using crypt_buf to dst_frame */
-		if (!fil_space_decrypt(space, slot->crypt_buf, dst_frame)) {
+		if (!fil_space_decrypt(node.space, slot->crypt_buf, dst_frame)) {
 			slot->release();
 			goto decrypt_failed;
 		}
 
-		ut_d(fil_page_type_validate(space, dst_frame));
+		ut_d(fil_page_type_validate(node.space, dst_frame));
 
-		if ((space->full_crc32() && page_compressed)
+		if ((fil_space_t::full_crc32(flags) && page_compressed)
 		    || fil_page_is_compressed_encrypted(dst_frame)) {
 			goto decompress_with_slot;
 		}
@@ -477,7 +478,7 @@ decrypt_failed:
 		goto decompress;
 	}
 
-	ut_ad(space->pending_io());
+	ut_ad(node.space->pending_io());
 	return true;
 }
 
@@ -1286,7 +1287,6 @@ buf_block_init(buf_block_t* block, byte* frame)
 
 	block->frame = frame;
 
-	block->page.flush_type = BUF_FLUSH_LRU;
 	block->page.state = BUF_BLOCK_NOT_USED;
 	block->page.buf_fix_count = 0;
 	block->page.io_fix = BUF_IO_NONE;
@@ -1583,7 +1583,7 @@ bool buf_pool_t::create()
 
   mutex_create(LATCH_ID_FLUSH_LIST, &flush_list_mutex);
 
-  for (int i= BUF_FLUSH_LRU; i < BUF_FLUSH_N_TYPES; i++)
+  for (int i= 0; i < 3; i++)
     no_flush[i]= os_event_create(0);
 
   watch= static_cast<buf_page_t*>
@@ -1658,7 +1658,7 @@ void buf_pool_t::close()
     allocator.deallocate_large_dodump(chunk->mem, &chunk->mem_pfx);
   }
 
-  for (ulint i= BUF_FLUSH_LRU; i < BUF_FLUSH_N_TYPES; ++i)
+  for (int i= 0; i < 3; ++i)
     os_event_destroy(no_flush[i]);
 
   ut_free(chunks);
@@ -1903,8 +1903,8 @@ inline bool buf_pool_t::withdraw_blocks()
 				       static_cast<ulint>(srv_LRU_scan_depth)),
 				scan_depth);
 
-			buf_flush_do_batch(BUF_FLUSH_LRU, scan_depth, 0, &n);
-			buf_flush_wait_batch_end(BUF_FLUSH_LRU);
+			buf_flush_do_batch(true, scan_depth, 0, &n);
+			buf_flush_wait_batch_end(true);
 
 			if (n.flushed) {
 				MONITOR_INC_VALUE_CUMULATIVE(
@@ -3277,7 +3277,7 @@ loop:
 
 		/* The call path is buf_read_page() ->
 		buf_read_page_low() (fil_io()) ->
-		buf_page_io_complete() ->
+		buf_page_read_complete() ->
 		buf_decrypt_after_read(). Here fil_space_t* is used
 		and we decrypt -> buf_page_check_corrupt() where page
 		checksums are compared. Decryption, decompression as
@@ -3995,7 +3995,6 @@ buf_page_init_low(
 /*==============*/
 	buf_page_t*	bpage)	/*!< in: block to init */
 {
-	bpage->flush_type = BUF_FLUSH_LRU;
 	bpage->io_fix = BUF_IO_NONE;
 	bpage->buf_fix_count = 0;
 	bpage->old = 0;
@@ -4452,26 +4451,17 @@ buf_page_create(
 	return(block);
 }
 
-/********************************************************************//**
-Monitor the buffer page read/write activity, and increment corresponding
-counter value if MONITOR_MODULE_BUF_PAGE (module_buf_page) module is
-enabled. */
-static
-void
-buf_page_monitor(
-/*=============*/
-	const buf_page_t*	bpage,	/*!< in: pointer to the block */
-	enum buf_io_fix		io_type)/*!< in: io_fix types */
+/** Monitor the buffer page read/write activity, and increment corresponding
+counter value in MONITOR_MODULE_BUF_PAGE.
+@param bpage   buffer page whose read or write was completed
+@param io_type BUF_IO_READ or BUF_IO_WRITE */
+ATTRIBUTE_COLD __attribute__((nonnull))
+void buf_page_monitor(const buf_page_t *bpage, buf_io_fix io_type)
 {
 	const byte*	frame;
 	monitor_id_t	counter;
 
-	/* If the counter module is not turned on, just return */
-	if (!MONITOR_IS_ON(MONITOR_MODULE_BUF_PAGE)) {
-		return;
-	}
-
-	ut_a(io_type == BUF_IO_READ || io_type == BUF_IO_WRITE);
+	ut_ad(io_type == BUF_IO_READ || io_type == BUF_IO_WRITE);
 
 	frame = bpage->zip.data
 		? bpage->zip.data
@@ -4579,21 +4569,17 @@ static void buf_mark_space_corrupt(buf_page_t* bpage, const fil_space_t& space)
 
 /** Mark a table corrupted.
 @param[in]	bpage	Corrupted page
-@param[in]	space	Corrupted page belongs to tablespace
+@param[in]	node	data file
 Also remove the bpage from LRU list. */
-static
-void
-buf_corrupt_page_release(buf_page_t* bpage, const fil_space_t* space)
+static void buf_corrupt_page_release(buf_page_t *bpage, const fil_node_t &node)
 {
-	const ibool	uncompressed = (buf_page_get_state(bpage)
-					== BUF_BLOCK_FILE_PAGE);
 	page_id_t	old_page_id = bpage->id;
 
 	/* First unfix and release lock on the bpage */
 	mutex_enter(&buf_pool.mutex);
 	mutex_enter(buf_page_get_mutex(bpage));
 	ut_ad(buf_page_get_io_fix(bpage) == BUF_IO_READ);
-	ut_ad(bpage->id.space() == space->id);
+	ut_ad(bpage->id.space() == node.space->id);
 
 	/* buf_fix_count can be greater than zero. Because other thread
 	can wait in buf_page_wait_read() for the page to be read. */
@@ -4602,7 +4588,7 @@ buf_corrupt_page_release(buf_page_t* bpage, const fil_space_t* space)
 	/* Set BUF_IO_NONE before we remove the block from LRU list */
 	buf_page_set_io_fix(bpage, BUF_IO_NONE);
 
-	if (uncompressed) {
+	if (bpage->state == BUF_BLOCK_FILE_PAGE) {
 		rw_lock_x_unlock_gen(
 			&((buf_block_t*) bpage)->lock,
 			BUF_IO_READ);
@@ -4611,7 +4597,7 @@ buf_corrupt_page_release(buf_page_t* bpage, const fil_space_t* space)
 	mutex_exit(buf_page_get_mutex(bpage));
 
 	if (!srv_force_recovery) {
-		buf_mark_space_corrupt(bpage, *space);
+		buf_mark_space_corrupt(bpage, *node.space);
 	}
 
 	/* After this point bpage can't be referenced. */
@@ -4646,21 +4632,23 @@ static bool buf_page_full_crc32_is_corrupted(ulint space_id, const byte* d,
 corrupted page. Note that we can't be 100% sure if page is corrupted
 or decrypt/decompress just failed.
 @param[in,out]	bpage		page
-@param[in,out]	space		tablespace from fil_space_acquire_for_io()
+@param[in]	node		data file
 @return	whether the operation succeeded
 @retval	DB_SUCCESS		if page has been read and is not corrupted
 @retval	DB_PAGE_CORRUPTED	if page based on checksum check is corrupted
 @retval	DB_DECRYPTION_FAILED	if page post encryption checksum matches but
 after decryption normal page checksum does not match.
 @retval	DB_TABLESPACE_DELETED	if accessed tablespace is not found */
-static dberr_t buf_page_check_corrupt(buf_page_t* bpage, fil_space_t* space)
+static dberr_t buf_page_check_corrupt(buf_page_t *bpage,
+                                      const fil_node_t &node)
 {
-	ut_ad(space->pending_io());
+	ut_ad(node.space->pending_io());
 
 	byte* dst_frame = (bpage->zip.data) ? bpage->zip.data :
 		((buf_block_t*) bpage)->frame;
 	dberr_t err = DB_SUCCESS;
-	uint key_version = buf_page_get_key_version(dst_frame, space->flags);
+	uint key_version = buf_page_get_key_version(dst_frame,
+						    node.space->flags);
 
 	/* In buf_decrypt_after_read we have either decrypted the page if
 	page post encryption checksum matches and used key_id is found
@@ -4668,23 +4656,25 @@ static dberr_t buf_page_check_corrupt(buf_page_t* bpage, fil_space_t* space)
 	not decrypted and it could be either encrypted and corrupted
 	or corrupted or good page. If we decrypted, there page could
 	still be corrupted if used key does not match. */
-	const bool seems_encrypted = !space->full_crc32() && key_version
-		&& space->crypt_data
-		&& space->crypt_data->type != CRYPT_SCHEME_UNENCRYPTED;
-	ut_ad(space->purpose != FIL_TYPE_TEMPORARY || space->full_crc32());
+	const bool seems_encrypted = !node.space->full_crc32() && key_version
+		&& node.space->crypt_data
+		&& node.space->crypt_data->type != CRYPT_SCHEME_UNENCRYPTED;
+	ut_ad(node.space->purpose != FIL_TYPE_TEMPORARY ||
+	      node.space->full_crc32());
 
 	/* If traditional checksums match, we assume that page is
 	not anymore encrypted. */
-	if (space->full_crc32()
+	if (node.space->full_crc32()
 	    && !buf_is_zeroes(span<const byte>(dst_frame,
-					       space->physical_size()))
-	    && (key_version || space->is_compressed()
-		|| space->purpose == FIL_TYPE_TEMPORARY)) {
+					       node.space->physical_size()))
+	    && (key_version || node.space->is_compressed()
+		|| node.space->purpose == FIL_TYPE_TEMPORARY)) {
 		if (buf_page_full_crc32_is_corrupted(
-			    space->id, dst_frame, space->is_compressed())) {
+			    bpage->id.space(), dst_frame,
+			    node.space->is_compressed())) {
 			err = DB_PAGE_CORRUPTED;
 		}
-	} else if (buf_page_is_corrupted(true, dst_frame, space->flags)) {
+	} else if (buf_page_is_corrupted(true, dst_frame, node.space->flags)) {
 		err = DB_PAGE_CORRUPTED;
 	}
 
@@ -4693,8 +4683,7 @@ static dberr_t buf_page_check_corrupt(buf_page_t* bpage, fil_space_t* space)
 		err = DB_DECRYPTION_FAILED;
 
 		ib::error()
-			<< "The page " << bpage->id << " in file '"
-			<< space->chain.start->name
+			<< "The page " << bpage->id << " in file '" << node.name
 			<< "' cannot be decrypted.";
 
 		ib::info()
@@ -4715,280 +4704,170 @@ static dberr_t buf_page_check_corrupt(buf_page_t* bpage, fil_space_t* space)
 	return (err);
 }
 
-/** Complete a read or write request of a file page to or from the buffer pool.
-@param[in,out]	bpage		page to complete
-@param[in]	dblwr		whether the doublewrite buffer was used (on write)
-@param[in]	evict		whether or not to evict the page from LRU list
+/** Complete a read request of a file page to buf_pool.
+@param bpage    recently read page
+@param node     data file
 @return whether the operation succeeded
-@retval	DB_SUCCESS		always when writing, or if a read page was OK
-@retval	DB_TABLESPACE_DELETED	if the tablespace does not exist
-@retval	DB_PAGE_CORRUPTED	if the checksum fails on a page read
-@retval	DB_DECRYPTION_FAILED	if page post encryption checksum matches but
-				after decryption normal page checksum does
-				not match */
-UNIV_INTERN
-dberr_t
-buf_page_io_complete(buf_page_t* bpage, bool dblwr, bool evict)
+@retval DB_SUCCESS              always when writing, or if a read page was OK
+@retval DB_PAGE_CORRUPTED       if the checksum fails on a page read
+@retval DB_DECRYPTION_FAILED    if the page cannot be decrypted */
+dberr_t buf_page_read_complete(buf_page_t *bpage, const fil_node_t &node)
 {
-	enum buf_io_fix	io_type;
-	const bool	uncompressed = (buf_page_get_state(bpage)
-					== BUF_BLOCK_FILE_PAGE);
-	ut_a(buf_page_in_file(bpage));
+  ut_ad(bpage->in_file());
+  ut_ad(bpage->id.space() || !buf_dblwr_page_inside(bpage->id.page_no()));
+  ut_ad(bpage->id.space() == node.space->id);
+  ut_ad(bpage->zip_size() == node.space->zip_size());
 
-	/* We do not need protect io_fix here by mutex to read
-	it because this is the only function where we can change the value
-	from BUF_IO_READ or BUF_IO_WRITE to some other value, and our code
-	ensures that this is the only thread that handles the i/o for this
-	block. */
+  /* We do not need protect io_fix here by mutex to read it because
+  this and buf_page_write_complete() are the only functions where we can
+  change the value from BUF_IO_READ or BUF_IO_WRITE to some other
+  value, and our code ensures that this is the only thread that handles
+  the i/o for this block. */
 
-	io_type = buf_page_get_io_fix(bpage);
-	ut_ad(io_type == BUF_IO_READ || io_type == BUF_IO_WRITE);
-	ut_ad(!!bpage->zip.ssize == (bpage->zip.data != NULL));
-	ut_ad(uncompressed || bpage->zip.data);
+  ut_ad(bpage->io_fix == BUF_IO_READ);
+  ut_ad(!!bpage->zip.ssize == !!bpage->zip.data);
+  ut_ad(bpage->state == BUF_BLOCK_FILE_PAGE || bpage->zip.data);
 
-	if (io_type == BUF_IO_READ) {
-		ulint	read_page_no = 0;
-		ulint	read_space_id = 0;
-		byte*	frame = bpage->zip.data
-			? bpage->zip.data
-			: reinterpret_cast<buf_block_t*>(bpage)->frame;
-		ut_ad(frame);
-		fil_space_t* space = fil_space_acquire_for_io(
-			bpage->id.space());
-		if (!space) {
-			return DB_TABLESPACE_DELETED;
-		}
+  const byte *frame= bpage->zip.data
+    ? bpage->zip.data
+    : reinterpret_cast<buf_block_t*>(bpage)->frame;
+  ut_ad(frame);
 
-		dberr_t	err;
+  dberr_t err;
+  if (!buf_page_decrypt_after_read(bpage, node))
+  {
+    err= DB_DECRYPTION_FAILED;
+    goto database_corrupted;
+  }
 
-		if (!buf_page_decrypt_after_read(bpage, space)) {
-			err = DB_DECRYPTION_FAILED;
-			goto database_corrupted;
-		}
+  if (bpage->zip.data && bpage->state == BUF_BLOCK_FILE_PAGE)
+  {
+    buf_pool.n_pend_unzip++;
+    auto ok= buf_zip_decompress(reinterpret_cast<buf_block_t*>(bpage), FALSE);
+    buf_pool.n_pend_unzip--;
 
-		if (bpage->zip.data && uncompressed) {
-			buf_pool.n_pend_unzip++;
-			ibool ok = buf_zip_decompress((buf_block_t*) bpage,
-						      FALSE);
-			buf_pool.n_pend_unzip--;
+    if (!ok)
+    {
+      ib::info() << "Page " << bpage->id << " zip_decompress failure.";
+      err= DB_PAGE_CORRUPTED;
+      goto database_corrupted;
+    }
+  }
 
-			if (!ok) {
-				ib::info() << "Page "
-					   << bpage->id
-					   << " zip_decompress failure.";
+  {
+    const page_id_t read_id(mach_read_from_4(frame + FIL_PAGE_SPACE_ID),
+                            mach_read_from_4(frame + FIL_PAGE_OFFSET));
 
-				err = DB_PAGE_CORRUPTED;
-				goto database_corrupted;
-			}
-		}
+    if (read_id == bpage->id);
+    else if (read_id == page_id_t(0, 0))
+      /* This is likely an uninitialized page. */;
+    else if (!node.space->full_crc32() &&
+             page_id_t(0, read_id.page_no()) == bpage->id)
+      /* FIL_PAGE_SPACE_ID was written as garbage in the system tablespace
+      before MySQL 4.1.1, which introduced innodb_file_per_table. */;
+    else if (node.space->full_crc32() &&
+             *reinterpret_cast<const uint32_t*>
+             (&frame[FIL_PAGE_FCRC32_KEY_VERSION]) &&
+             node.space->crypt_data &&
+             node.space->crypt_data->type != CRYPT_SCHEME_UNENCRYPTED)
+    {
+      ib::error() << "Cannot decrypt " << bpage->id;
+      err= DB_DECRYPTION_FAILED;
+      goto release_page;
+    }
+    else
+      ib::error() << "Space id and page no stored in the page, read in are "
+                  << read_id << ", should be " << bpage->id;
+  }
 
-		/* If this page is not uninitialized and not in the
-		doublewrite buffer, then the page number and space id
-		should be the same as in block. */
-		read_page_no = mach_read_from_4(frame + FIL_PAGE_OFFSET);
-		read_space_id = mach_read_from_4(
-			frame + FIL_PAGE_ARCH_LOG_NO_OR_SPACE_ID);
-
-		if (bpage->id.space() == TRX_SYS_SPACE
-		    && buf_dblwr_page_inside(bpage->id.page_no())) {
-
-			ib::error() << "Reading page " << bpage->id
-				<< ", which is in the doublewrite buffer!";
-
-		} else if (read_space_id == 0 && read_page_no == 0) {
-			/* This is likely an uninitialized page. */
-		} else if (((!space->full_crc32()
-			     || bpage->id.space() != TRX_SYS_SPACE)
-			    && bpage->id.space() != read_space_id)
-			   || bpage->id.page_no() != read_page_no) {
-			/* We do not compare space_id to read_space_id
-			in the system tablespace unless space->full_crc32(),
-			because the field was written as garbage before
-			MySQL 4.1.1, which introduced support for
-			innodb_file_per_table. */
-
-			if (space->full_crc32()
-			    && *reinterpret_cast<uint32_t*>
-			    (&frame[FIL_PAGE_FCRC32_KEY_VERSION])
-			    && space->crypt_data
-			    && space->crypt_data->type
-			    != CRYPT_SCHEME_UNENCRYPTED) {
-				ib::error() << "Cannot decrypt " << bpage->id;
-				err = DB_DECRYPTION_FAILED;
-				goto release_page;
-			}
-
-			ib::error() << "Space id and page no stored in "
-				"the page, read in are "
-				<< page_id_t(read_space_id, read_page_no)
-				<< ", should be " << bpage->id;
-		}
-
-		err = buf_page_check_corrupt(bpage, space);
-
+  err= buf_page_check_corrupt(bpage, node);
+  if (err != DB_SUCCESS)
+  {
 database_corrupted:
+    /* Not a real corruption if it was triggered by error injection */
+    DBUG_EXECUTE_IF("buf_page_import_corrupt_failure",
+                    if (!is_predefined_tablespace(bpage->id.space()))
+                    {
+                      buf_corrupt_page_release(bpage, node);
+                      ib::info() << "Simulated IMPORT corruption";
+                      return err;
+                    }
+                    err= DB_SUCCESS;
+                    goto page_not_corrupt;);
 
-		if (err != DB_SUCCESS) {
-			/* Not a real corruption if it was triggered by
-			error injection */
-			DBUG_EXECUTE_IF(
-				"buf_page_import_corrupt_failure",
-				if (!is_predefined_tablespace(
-					    bpage->id.space())) {
-					buf_corrupt_page_release(bpage, space);
-					ib::info() << "Simulated IMPORT "
-						"corruption";
-					space->release_for_io();
-					return(err);
-				}
-				err = DB_SUCCESS;
-				goto page_not_corrupt;
-			);
+    if (err == DB_PAGE_CORRUPTED)
+    {
+      ib::error() << "Database page corruption on disk"
+                     " or a failed read of file '"
+                  << node.name << "' page " << bpage->id
+                  << ". You may have to recover from a backup.";
 
-			if (err == DB_PAGE_CORRUPTED) {
-				ib::error()
-					<< "Database page corruption on disk"
-					" or a failed file read of tablespace "
-					<< space->name << " page " << bpage->id
-					<< ". You may have to recover from "
-					<< "a backup.";
+      buf_page_print(frame, bpage->zip_size());
 
-				buf_page_print(frame, bpage->zip_size());
+      ib::info() << " You can use CHECK TABLE to scan"
+                    " your table for corruption. "
+                 << FORCE_RECOVERY_MSG;
+    }
 
-				ib::info()
-					<< "It is also possible that your"
-					" operating system has corrupted"
-					" its own file cache and rebooting"
-					" your computer removes the error."
-					" If the corrupt page is an index page."
-					" You can also try to fix the"
-					" corruption by dumping, dropping,"
-					" and reimporting the corrupt table."
-					" You can use CHECK TABLE to scan"
-					" your table for corruption. "
-					<< FORCE_RECOVERY_MSG;
-			}
+    if (!srv_force_recovery)
+    {
+      /* If the corruption is in the system tablespace, we will
+      intentionally crash the server. */
+      if (bpage->id.space() == TRX_SYS_SPACE)
+        ib::fatal() << "Aborting because of a corrupt database page.";
+      buf_corrupt_page_release(bpage, node);
+      return err;
+    }
+  }
 
-			if (!srv_force_recovery) {
+  DBUG_EXECUTE_IF("buf_page_import_corrupt_failure",
+                  page_not_corrupt: bpage= bpage; );
 
-				/* If page space id is larger than TRX_SYS_SPACE
-				(0), we will attempt to mark the corresponding
-				table as corrupted instead of crashing server */
-				if (bpage->id.space() == TRX_SYS_SPACE) {
-					ib::fatal() << "Aborting because of"
-						" a corrupt database page.";
-				}
-
-				buf_corrupt_page_release(bpage, space);
-				space->release_for_io();
-				return(err);
-			}
-		}
-
-		DBUG_EXECUTE_IF("buf_page_import_corrupt_failure",
-				page_not_corrupt: bpage = bpage; );
-
-		if (err == DB_PAGE_CORRUPTED
-		    || err == DB_DECRYPTION_FAILED) {
+  if (err == DB_PAGE_CORRUPTED || err == DB_DECRYPTION_FAILED)
+  {
 release_page:
-			const page_id_t corrupt_page_id = bpage->id;
+    const page_id_t corrupt_page_id= bpage->id;
+    buf_corrupt_page_release(bpage, node);
+    if (recv_recovery_is_on())
+      recv_sys.free_corrupted_page(corrupt_page_id);
+    return err;
+  }
 
-			buf_corrupt_page_release(bpage, space);
+  if (recv_recovery_is_on())
+    recv_recover_page(node.space, bpage);
 
-			if (recv_recovery_is_on()) {
-				recv_sys.free_corrupted_page(corrupt_page_id);
-			}
+  if (bpage->state == BUF_BLOCK_FILE_PAGE && !recv_no_ibuf_operations &&
+      (!bpage->id.space() || !is_predefined_tablespace(bpage->id.space())) &&
+      fil_page_get_type(frame) == FIL_PAGE_INDEX &&
+      page_is_leaf(frame) && ibuf_page_exists(bpage->id, bpage->zip_size()))
+    bpage->ibuf_exist= true;
 
-			space->release_for_io();
-			return err;
-		}
+  BPageMutex *block_mutex= buf_page_get_mutex(bpage);
+  mutex_enter(&buf_pool.mutex);
+  mutex_enter(block_mutex);
 
-		if (recv_recovery_is_on()) {
-			recv_recover_page(space, bpage);
-		}
+  buf_page_set_io_fix(bpage, BUF_IO_NONE);
+  if (UNIV_UNLIKELY(MONITOR_IS_ON(MONITOR_MODULE_BUF_PAGE)))
+    buf_page_monitor(bpage, BUF_IO_READ);
 
-		if (uncompressed
-		    && !recv_no_ibuf_operations
-		    && (bpage->id.space() == 0
-			|| !is_predefined_tablespace(bpage->id.space()))
-		    && fil_page_get_type(frame) == FIL_PAGE_INDEX
-		    && page_is_leaf(frame)
-		    && ibuf_page_exists(bpage->id, bpage->zip_size())) {
-			bpage->ibuf_exist = true;
-		}
+  /* NOTE that the call to ibuf may have moved the ownership of the
+  x-latch to this thread */
+  ut_ad(buf_pool.n_pend_reads > 0);
+  buf_pool.n_pend_reads--;
+  buf_pool.stat.n_pages_read++;
 
-		space->release_for_io();
-	} else {
-		/* io_type == BUF_IO_WRITE */
-		if (bpage->slot) {
-			/* Mark slot free */
-			bpage->slot->release();
-			bpage->slot = NULL;
-		}
-	}
+  /* Because this thread which does the unlocking might not be the same that
+  did the locking, we use a pass value != 0 in unlock, which simply
+  removes the newest lock debug record, without checking the thread id. */
+  if (bpage->state == BUF_BLOCK_FILE_PAGE)
+    rw_lock_x_unlock_gen(&((buf_block_t*) bpage)->lock, BUF_IO_READ);
 
-	BPageMutex* block_mutex = buf_page_get_mutex(bpage);
-	mutex_enter(&buf_pool.mutex);
-	mutex_enter(block_mutex);
+  mutex_exit(block_mutex);
 
-	/* Because this thread which does the unlocking is not the same that
-	did the locking, we use a pass value != 0 in unlock, which simply
-	removes the newest lock debug record, without checking the thread
-	id. */
-
-	buf_page_set_io_fix(bpage, BUF_IO_NONE);
-	buf_page_monitor(bpage, io_type);
-
-	if (io_type == BUF_IO_READ) {
-		/* NOTE that the call to ibuf may have moved the ownership of
-		the x-latch to this OS thread: do not let this confuse you in
-		debugging! */
-
-		ut_ad(buf_pool.n_pend_reads > 0);
-		buf_pool.n_pend_reads--;
-		buf_pool.stat.n_pages_read++;
-
-		if (uncompressed) {
-			rw_lock_x_unlock_gen(&((buf_block_t*) bpage)->lock,
-					     BUF_IO_READ);
-		}
-
-		mutex_exit(block_mutex);
-	} else {
-		/* Write means a flush operation: call the completion
-		routine in the flush system */
-
-		buf_flush_write_complete(bpage, dblwr);
-
-		if (uncompressed) {
-			rw_lock_sx_unlock_gen(&((buf_block_t*) bpage)->lock,
-					      BUF_IO_WRITE);
-		}
-
-		buf_pool.stat.n_pages_written++;
-
-		/* We decide whether or not to evict the page from the
-		LRU list based on the flush_type.
-		* BUF_FLUSH_LIST: don't evict
-		* BUF_FLUSH_LRU: always evict
-		* BUF_FLUSH_SINGLE_PAGE: eviction preference is passed
-		by the caller explicitly. */
-		if (buf_page_get_flush_type(bpage) == BUF_FLUSH_LRU) {
-			evict = true;
-		}
-
-		mutex_exit(block_mutex);
-
-		if (evict) {
-			buf_LRU_free_page(bpage, true);
-		}
-	}
-
-	DBUG_PRINT("ib_buf", ("%s page %u:%u",
-			      io_type == BUF_IO_READ ? "read" : "wrote",
-			      bpage->id.space(), bpage->id.page_no()));
-	mutex_exit(&buf_pool.mutex);
-	return DB_SUCCESS;
+  DBUG_PRINT("ib_buf", ("read page %u:%u",
+                        bpage->id.space(), bpage->id.page_no()));
+  mutex_exit(&buf_pool.mutex);
+  return DB_SUCCESS;
 }
 
 #ifdef UNIV_DEBUG
@@ -5018,28 +4897,26 @@ All pages must be in a replaceable state (not modified or latched). */
 void buf_pool_invalidate()
 {
 	mutex_enter(&buf_pool.mutex);
+	ut_ad(!buf_pool.init_flush[IORequest::LRU]);
+	ut_ad(!buf_pool.init_flush[IORequest::FLUSH_LIST]);
+	ut_ad(!buf_pool.init_flush[IORequest::SINGLE_PAGE]);
+	ut_ad(!buf_pool.n_flush[IORequest::SINGLE_PAGE]);
 
-	for (unsigned i = BUF_FLUSH_LRU; i < BUF_FLUSH_N_TYPES; i++) {
-
-		/* As this function is called during startup and
-		during redo application phase during recovery, InnoDB
-		is single threaded (apart from IO helper threads) at
-		this stage. No new write batch can be in intialization
-		stage at this point. */
-		ut_ad(!buf_pool.init_flush[i]);
-
-		/* However, it is possible that a write batch that has
-		been posted earlier is still not complete. For buffer
-		pool invalidation to proceed we must ensure there is NO
-		write activity happening. */
-		if (buf_pool.n_flush[i] > 0) {
-			buf_flush_t	type = buf_flush_t(i);
-
-			mutex_exit(&buf_pool.mutex);
-			buf_flush_wait_batch_end(type);
-			mutex_enter(&buf_pool.mutex);
-		}
+	if (buf_pool.n_flush[IORequest::LRU]) {
+		mutex_exit(&buf_pool.mutex);
+		buf_flush_wait_batch_end(true);
+		mutex_enter(&buf_pool.mutex);
 	}
+
+	if (buf_pool.n_flush[IORequest::FLUSH_LIST]) {
+		mutex_exit(&buf_pool.mutex);
+		buf_flush_wait_batch_end(false);
+		mutex_enter(&buf_pool.mutex);
+	}
+
+	/* It is possible that a write batch that has been posted
+	earlier is still not complete. For buffer pool invalidation to
+	proceed we must ensure there is NO write activity happening. */
 
 	ut_d(mutex_exit(&buf_pool.mutex));
 	ut_d(buf_pool.assert_all_freed());
@@ -5065,10 +4942,6 @@ void buf_pool_t::validate()
 {
 	buf_page_t*	b;
 	chunk_t*	chunk;
-	ulint		i;
-	ulint		n_lru_flush	= 0;
-	ulint		n_page_flush	= 0;
-	ulint		n_list_flush	= 0;
 	ulint		n_lru		= 0;
 	ulint		n_flushing	= 0;
 	ulint		n_free		= 0;
@@ -5081,7 +4954,7 @@ void buf_pool_t::validate()
 
 	/* Check the uncompressed blocks. */
 
-	for (i = n_chunks; i--; chunk++) {
+	for (auto i = n_chunks; i--; chunk++) {
 
 		ulint		j;
 		buf_block_t*	block = chunk->blocks;
@@ -5102,42 +4975,9 @@ void buf_pool_t::validate()
 			case BUF_BLOCK_FILE_PAGE:
 				ut_ad(page_hash_get_low(block->page.id)
 				      == &block->page);
-
-				switch (buf_page_get_io_fix(&block->page)) {
-				case BUF_IO_NONE:
-					break;
-
-				case BUF_IO_WRITE:
-					switch (buf_page_get_flush_type(
-							&block->page)) {
-					case BUF_FLUSH_LRU:
-						n_lru_flush++;
-						goto assert_s_latched;
-					case BUF_FLUSH_SINGLE_PAGE:
-						n_page_flush++;
-assert_s_latched:
-						ut_a(rw_lock_is_locked(
-							     &block->lock,
-								     RW_LOCK_S)
-						     || rw_lock_is_locked(
-								&block->lock,
-								RW_LOCK_SX));
-						break;
-					case BUF_FLUSH_LIST:
-						n_list_flush++;
-						break;
-					default:
-						ut_error;
-					}
-					break;
-				case BUF_IO_READ:
-					ut_ad(rw_lock_is_locked(&block->lock,
-								RW_LOCK_X));
-					break;
-				case BUF_IO_PIN:
-					break;
-				}
-
+				ut_ad(block->page.io_fix != BUF_IO_READ
+				      || rw_lock_is_locked(&block->lock,
+							   RW_LOCK_X));
 				n_lru++;
 				break;
 
@@ -5163,7 +5003,7 @@ assert_s_latched:
 	for (b = UT_LIST_GET_FIRST(zip_clean); b;
 	     b = UT_LIST_GET_NEXT(list, b)) {
 		ut_ad(buf_page_get_state(b) == BUF_BLOCK_ZIP_PAGE);
-		switch (buf_page_get_io_fix(b)) {
+		switch (b->io_fix) {
 		case BUF_IO_NONE:
 		case BUF_IO_PIN:
 			/* All clean blocks should be I/O-unfixed. */
@@ -5201,27 +5041,6 @@ assert_s_latched:
 		case BUF_BLOCK_ZIP_DIRTY:
 			n_lru++;
 			n_zip++;
-			switch (buf_page_get_io_fix(b)) {
-			case BUF_IO_NONE:
-			case BUF_IO_READ:
-			case BUF_IO_PIN:
-				break;
-			case BUF_IO_WRITE:
-				switch (buf_page_get_flush_type(b)) {
-				case BUF_FLUSH_LRU:
-					n_lru_flush++;
-					break;
-				case BUF_FLUSH_SINGLE_PAGE:
-					n_page_flush++;
-					break;
-				case BUF_FLUSH_LIST:
-					n_list_flush++;
-					break;
-				default:
-					ut_error;
-				}
-				break;
-			}
 			break;
 		case BUF_BLOCK_FILE_PAGE:
 			/* uncompressed page */
@@ -5263,10 +5082,6 @@ assert_s_latched:
 			<< ", free blocks " << n_free << ". Aborting...";
 	}
 
-	ut_ad(n_flush[BUF_FLUSH_LIST] == n_list_flush);
-	ut_ad(n_flush[BUF_FLUSH_LRU] == n_lru_flush);
-	ut_ad(n_flush[BUF_FLUSH_SINGLE_PAGE] == n_page_flush);
-
 	mutex_exit(&mutex);
 
 	ut_d(buf_LRU_validate());
@@ -5306,9 +5121,9 @@ void buf_pool_t::print()
 		<< UT_LIST_GET_LEN(flush_list)
 		<< ", n pending decompressions=" << n_pend_unzip
 		<< ", n pending reads=" << n_pend_reads
-		<< ", n pending flush LRU=" << n_flush[BUF_FLUSH_LRU]
-		<< " list=" << n_flush[BUF_FLUSH_LIST]
-		<< " single page=" << n_flush[BUF_FLUSH_SINGLE_PAGE]
+		<< ", n pending flush LRU=" << n_flush[IORequest::LRU]
+		<< " list=" << n_flush[IORequest::FLUSH_LIST]
+		<< " single page=" << n_flush[IORequest::SINGLE_PAGE]
 		<< ", pages made young=" << stat.n_pages_made_young
 		<< ", not young=" << stat.n_pages_not_made_young
 		<< ", pages read=" << stat.n_pages_read
@@ -5408,8 +5223,7 @@ ulint buf_get_latched_pages_number()
 			buf_page_mutex_enter(block);
 
 			if (block->page.buf_fix_count != 0
-			    || buf_page_get_io_fix(&block->page)
-			    != BUF_IO_NONE) {
+			    || block->page.io_fix != BUF_IO_NONE) {
 				fixed_pages_number++;
 			}
 
@@ -5491,16 +5305,16 @@ void buf_stats_get_pool_info(buf_pool_info_t *pool_info)
 	pool_info->n_pend_reads = buf_pool.n_pend_reads;
 
 	pool_info->n_pending_flush_lru =
-		 (buf_pool.n_flush[BUF_FLUSH_LRU]
-		  + buf_pool.init_flush[BUF_FLUSH_LRU]);
+		(buf_pool.n_flush[IORequest::LRU]
+		 + buf_pool.init_flush[IORequest::LRU]);
 
 	pool_info->n_pending_flush_list =
-		 (buf_pool.n_flush[BUF_FLUSH_LIST]
-		  + buf_pool.init_flush[BUF_FLUSH_LIST]);
+		 (buf_pool.n_flush[IORequest::FLUSH_LIST]
+		  + buf_pool.init_flush[IORequest::FLUSH_LIST]);
 
 	pool_info->n_pending_flush_single_page =
-		 (buf_pool.n_flush[BUF_FLUSH_SINGLE_PAGE]
-		  + buf_pool.init_flush[BUF_FLUSH_SINGLE_PAGE]);
+		 (buf_pool.n_flush[IORequest::SINGLE_PAGE]
+		  + buf_pool.init_flush[IORequest::SINGLE_PAGE]);
 
 	mutex_exit(&buf_pool.flush_list_mutex);
 
@@ -5730,9 +5544,9 @@ ulint buf_pool_check_no_pending_io()
 	ulint pending_io = buf_pool.n_pend_reads;
 	mutex_enter(&buf_pool.mutex);
 	pending_io +=
-		+ buf_pool.n_flush[BUF_FLUSH_LRU]
-		+ buf_pool.n_flush[BUF_FLUSH_SINGLE_PAGE]
-		+ buf_pool.n_flush[BUF_FLUSH_LIST];
+		+ buf_pool.n_flush[IORequest::LRU]
+		+ buf_pool.n_flush[IORequest::FLUSH_LIST]
+		+ buf_pool.n_flush[IORequest::SINGLE_PAGE];
 	mutex_exit(&buf_pool.mutex);
 
 	return(pending_io);

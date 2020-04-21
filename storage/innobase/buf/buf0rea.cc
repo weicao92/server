@@ -118,8 +118,7 @@ buf_read_page_low(
 
 	*err = DB_SUCCESS;
 
-	if (page_id.space() == TRX_SYS_SPACE
-	    && buf_dblwr_page_inside(page_id.page_no())) {
+	if (!page_id.space() && buf_dblwr_page_inside(page_id.page_no())) {
 
 		ib::error() << "Trying to read doublewrite buffer page "
 			<< page_id;
@@ -168,18 +167,19 @@ buf_read_page_low(
 		dst = ((buf_block_t*) bpage)->frame;
 	}
 
-	*err = fil_io(
+	fil_io_t fio = fil_io(
 		IORequestRead, sync, page_id, zip_size, 0,
 		zip_size ? zip_size : srv_page_size,
 		dst, bpage, ignore);
 
-	if (sync) {
-		thd_wait_end(NULL);
-	}
+	*err= fio.err;
 
-	if (UNIV_UNLIKELY(*err != DB_SUCCESS)) {
-		if (ignore || *err == DB_TABLESPACE_DELETED) {
+	if (UNIV_UNLIKELY(fio.err != DB_SUCCESS)) {
+		if (ignore || fio.err == DB_TABLESPACE_DELETED) {
 			buf_read_page_handle_error(bpage);
+			if (sync && fio.node) {
+				fio.node->space->release_for_io();
+			}
 			return(0);
 		}
 
@@ -187,9 +187,11 @@ buf_read_page_low(
 	}
 
 	if (sync) {
-		/* The i/o is already completed when we arrive from
-		fil_read */
-		*err = buf_page_io_complete(bpage);
+		thd_wait_end(NULL);
+
+		/* The i/o was already completed in fil_io() */
+		*err = buf_page_read_complete(bpage, *fio.node);
+		fio.node->space->release_for_io();
 
 		if (*err != DB_SUCCESS) {
 			return(0);
@@ -305,7 +307,7 @@ dberr_t buf_read_page(const page_id_t page_id, ulint zip_size)
 	dberr_t		err = DB_SUCCESS;
 
 	/* We do synchronous IO because our AIO completion code
-	is sub-optimal. See buf_page_io_complete(), we have to
+	is sub-optimal. See buf_page_read_complete(), we have to
 	acquire the buffer pool mutex before acquiring the block
 	mutex, required for updating the page state. The acquire
 	of the buffer pool mutex becomes an expensive bottleneck. */

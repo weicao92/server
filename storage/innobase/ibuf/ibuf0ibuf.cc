@@ -3341,7 +3341,7 @@ fail_exit:
 	buffer pool, but we do not have to care about it, since we are
 	holding a latch on the insert buffer leaf page that contains
 	buffered changes for (space, page_no).  If the page enters the
-	buffer pool, buf_page_io_complete() for (space, page_no) will
+	buffer pool, buf_page_read_complete() for (space, page_no) will
 	have to acquire a latch on the same insert buffer leaf page,
 	which it cannot do until we have buffered the IBUF_OP_DELETE
 	and done mtr_commit(&mtr) to release the latch. */

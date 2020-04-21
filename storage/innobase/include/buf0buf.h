@@ -756,24 +756,6 @@ buf_page_belongs_to_unzip_LRU(
 	const buf_page_t*	bpage)	/*!< in: pointer to control block */
 	MY_ATTRIBUTE((warn_unused_result));
 
-/*********************************************************************//**
-Get the flush type of a page.
-@return flush type */
-UNIV_INLINE
-buf_flush_t
-buf_page_get_flush_type(
-/*====================*/
-	const buf_page_t*	bpage)	/*!< in: buffer page */
-	MY_ATTRIBUTE((warn_unused_result));
-/*********************************************************************//**
-Set the flush type of a page. */
-UNIV_INLINE
-void
-buf_page_set_flush_type(
-/*====================*/
-	buf_page_t*	bpage,		/*!< in: buffer page */
-	buf_flush_t	flush_type);	/*!< in: flush type */
-
 /** Map a block to a file page.
 @param[in,out]	block	pointer to control block
 @param[in]	page_id	page id */
@@ -897,23 +879,21 @@ buf_page_init_for_read(
 	ulint			zip_size,
 	bool			unzip);
 
-/** Complete a read or write request of a file page to or from the buffer pool.
-@param[in,out]	bpage	page to complete
-@param[in]	dblwr	whether the doublewrite buffer was used (on write)
-@param[in]	evict	whether or not to evict the page from LRU list
+/** Monitor the buffer page read/write activity, and increment corresponding
+counter value in MONITOR_MODULE_BUF_PAGE.
+@param bpage   buffer page whose read or write was completed
+@param io_type BUF_IO_READ or BUF_IO_WRITE */
+ATTRIBUTE_COLD __attribute__((nonnull))
+void buf_page_monitor(const buf_page_t *bpage, buf_io_fix io_type);
+
+/** Complete a read request of a file page to buf_pool.
+@param bpage    recently read page
+@param node     data file
 @return whether the operation succeeded
-@retval	DB_SUCCESS		always when writing, or if a read page was OK
-@retval	DB_PAGE_CORRUPTED	if the checksum fails on a page read
-@retval	DB_DECRYPTION_FAILED	if page post encryption checksum matches but
-				after decryption normal page checksum does
-				not match */
-UNIV_INTERN
-dberr_t
-buf_page_io_complete(
-	buf_page_t*	bpage,
-	bool		dblwr = false,
-	bool		evict = false)
-	MY_ATTRIBUTE((nonnull));
+@retval DB_SUCCESS              always when writing, or if a read page was OK
+@retval DB_PAGE_CORRUPTED       if the checksum fails on a page read
+@retval DB_DECRYPTION_FAILED    if the page cannot be decrypted */
+dberr_t buf_page_read_complete(buf_page_t *bpage, const fil_node_t &node);
 
 /** Returns the control block of a file page, NULL if not found.
 If the block is found and lock is not NULL then the appropriate
@@ -1049,34 +1029,29 @@ for compressed and uncompressed frames */
 class buf_page_t
 {
 public:
-	/** @name General fields
-	None of these bit-fields must be modified without holding
-	get_mutex(), since they can be stored in the same
-	machine word.  Some of these fields are additionally protected
-	by buf_pool.mutex. */
-	/* @{ */
+  /** @name General fields */
+  /* @{ */
 
-	/** Page id. Protected by buf_pool mutex. */
-	page_id_t	id;
-	buf_page_t*	hash;		/*!< node used in chaining to
-					buf_pool.page_hash or
-					buf_pool.zip_hash */
+  /** Page id. Protected by buf_pool.mutex. FIXME. Really? @see state */
+  page_id_t id;
+  /** buf_pool.page_hash bucket link; protected by the hash bucket latch */
+  buf_page_t *hash;
 
-	/** Count of how manyfold this block is currently bufferfixed. */
-	Atomic_counter<uint32_t>	buf_fix_count;
+  /** Count of how manyfold this block is currently bufferfixed. */
+  Atomic_counter<uint32_t> buf_fix_count;
 
-	/** type of pending I/O operation; also protected by
-	buf_pool.mutex for writes only */
-	buf_io_fix	io_fix;
+  /** type of pending I/O operation; also protected by
+  buf_pool.mutex for writes only. FIXME: clarify the rules! */
+  buf_io_fix io_fix;
 
-	/** Block state. @see in_file() */
-	buf_page_state	state;
+  /** Block state. @see in_file()
+  FIXME: Review/document the protection rules.
+  Which transitions are possible while the block is in
+  buf_pool.page_hash? Those transitions will be protected
+  by the hash bucket latch only, not get_mutex() or buf_pool.mutex. */
+  buf_page_state state;
+  /* @} */
 
-	unsigned	flush_type:2;	/*!< if this block is currently being
-					flushed to disk, this tells the
-					flush_type.
-					@see buf_flush_t */
-	/* @} */
 	page_zip_des_t	zip;		/*!< compressed page; zip.data
 					(but not the data it points to) is
 					also protected by buf_pool.mutex;
@@ -2135,13 +2110,13 @@ public:
 	UT_LIST_BASE_NODE_T(buf_page_t) flush_list;
 					/*!< base node of the modified block
 					list */
-	ibool		init_flush[BUF_FLUSH_N_TYPES];
+	ibool		init_flush[3];
 					/*!< this is TRUE when a flush of the
 					given type is being initialized */
-	ulint		n_flush[BUF_FLUSH_N_TYPES];
-					/*!< this is the number of pending
-					writes in the given flush type */
-	os_event_t	no_flush[BUF_FLUSH_N_TYPES];
+	/** Number of pending writes of a flush type.
+	The sum of these is approximately the sum of BUF_IO_WRITE blocks. */
+	Atomic_counter<ulint> n_flush[3];
+	os_event_t	no_flush[3];
 					/*!< this is in the set state
 					when there is no flush batch
 					of the given type running;
