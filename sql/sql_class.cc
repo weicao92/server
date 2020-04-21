@@ -175,7 +175,8 @@ Key::Key(const Key &rhs, MEM_ROOT *mem_root)
   columns(rhs.columns, mem_root),
   name(rhs.name),
   option_list(rhs.option_list),
-  generated(rhs.generated), invisible(false)
+  generated(rhs.generated), invisible(false),
+  without_overlaps(rhs.without_overlaps), period(rhs.period)
 {
   list_copy_and_replace_each_value(columns, mem_root);
 }
@@ -636,6 +637,7 @@ THD::THD(my_thread_id id, bool is_wsrep_applier)
    m_current_stage_key(0), m_psi(0),
    in_sub_stmt(0), log_all_errors(0),
    binlog_unsafe_warning_flags(0),
+   current_stmt_binlog_format(BINLOG_FORMAT_MIXED),
    bulk_param(0),
    table_map_for_update(0),
    m_examined_row_count(0),

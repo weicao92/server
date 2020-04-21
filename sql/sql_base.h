@@ -160,7 +160,7 @@ TABLE_LIST *find_table_in_list(TABLE_LIST *table,
                                TABLE_LIST *TABLE_LIST::*link,
                                const LEX_CSTRING *db_name,
                                const LEX_CSTRING *table_name);
-void close_thread_tables(THD *thd);
+int close_thread_tables(THD *thd);
 void switch_to_nullable_trigger_fields(List<Item> &items, TABLE *);
 void switch_defaults_to_nullable_trigger_fields(TABLE *table);
 bool fill_record_n_invoke_before_triggers(THD *thd, TABLE *table,
@@ -306,7 +306,6 @@ bool close_cached_tables(THD *thd, TABLE_LIST *tables,
                          bool wait_for_refresh, ulong timeout);
 void purge_tables();
 bool flush_tables(THD *thd, flush_tables_type flag);
-bool close_cached_connection_tables(THD *thd, LEX_CSTRING *connect_string);
 void close_all_tables_for_name(THD *thd, TABLE_SHARE *share,
                                ha_extra_function extra,
                                TABLE *skip_table);

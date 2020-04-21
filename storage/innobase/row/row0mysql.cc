@@ -54,7 +54,6 @@ Created 9/17/2000 Heikki Tuuri
 #include "rem0cmp.h"
 #include "row0import.h"
 #include "row0ins.h"
-#include "row0merge.h"
 #include "row0row.h"
 #include "row0sel.h"
 #include "row0upd.h"
@@ -1098,7 +1097,7 @@ row_get_prebuilt_insert_row(
 		may need to rebuild the row insert template. */
 
 		if (prebuilt->trx_id == table->def_trx_id
-		    && UT_LIST_GET_LEN(prebuilt->ins_node->entry_list)
+		    && prebuilt->ins_node->entry_list.size()
 		    == UT_LIST_GET_LEN(table->indexes)) {
 
 			return(prebuilt->ins_node->row);
@@ -2749,7 +2748,10 @@ row_mysql_drop_garbage_tables()
 		table_name = mem_heap_strdupl(
 			heap,
 			reinterpret_cast<const char*>(field), len);
-		if (strstr(table_name, "/" TEMP_FILE_PREFIX "-")) {
+		if (strstr(table_name, "/" TEMP_FILE_PREFIX "-") &&
+                    !strstr(table_name, "/" TEMP_FILE_PREFIX "-backup-") &&
+                    !strstr(table_name, "/" TEMP_FILE_PREFIX "-exchange-"))
+                {
 			btr_pcur_store_position(&pcur, &mtr);
 			btr_pcur_commit_specify_mtr(&pcur, &mtr);
 
@@ -3518,13 +3520,15 @@ row_drop_table_for_mysql(
 
 	if (table->n_foreign_key_checks_running > 0) {
 defer:
-		/* Rename #sql2 to #sql-ib if table has open ref count
+		/* Rename #sql-backup to #sql-ib if table has open ref count
 		while dropping the table. This scenario can happen
 		when purge thread is waiting for dict_sys.mutex so
 		that it could close the table. But drop table acquires
-		dict_sys.mutex. */
+		dict_sys.mutex.
+                In the future this should use 'tmp_file_prefix'!
+                */
 		if (!is_temp_name
-		    || strstr(table->name.m_name, "/#sql2")) {
+		    || strstr(table->name.m_name, "/#sql-backup-")) {
 			heap = mem_heap_create(FN_REFLEN);
 			const char* tmp_name
 				= dict_mem_create_temporary_tablename(

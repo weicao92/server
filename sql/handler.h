@@ -90,6 +90,15 @@ enum enum_alter_inplace_result {
   HA_ALTER_INPLACE_NO_LOCK
 };
 
+/* Flags for create_partitioning_metadata() */
+
+enum chf_create_flags {
+  CHF_CREATE_FLAG,
+  CHF_DELETE_FLAG,
+  CHF_RENAME_FLAG,
+  CHF_INDEX_FLAG
+};
+
 /* Bits in table_flags() to show what database can do */
 
 #define HA_NO_TRANSACTIONS     (1ULL << 0) /* Doesn't support transactions */
@@ -1670,6 +1679,14 @@ struct handlerton
 
   /* Server shutdown early notification.*/
   void (*pre_shutdown)(void);
+
+  /*
+    Inform handler that partitioning engine has changed the .frm and the .par
+    files
+  */
+  int (*create_partitioning_metadata)(const char *path,
+                                      const char *old_path,
+                                      chf_create_flags action_flag);
 };
 
 
@@ -1729,10 +1746,14 @@ handlerton *ha_default_tmp_handlerton(THD *thd);
 /* can be replicated by wsrep replication provider plugin */
 #define HTON_WSREP_REPLICATION (1 << 13)
 
-/* Shared storage on slave. Ignore on slave any CREATE TABLE, DROP or updates */
+/*
+  Set this on the *slave* that's connected to a shared with a master storage.
+  The slave will ignore any CREATE TABLE, DROP or updates for this engine.
+*/
 #define HTON_IGNORE_UPDATES (1 << 14)
 
 /*
+  Set this on the *master* that's connected to a shared with a slave storage.
   The table may not exists on the slave. The effects of having this flag are:
   - ALTER TABLE that changes engine from this table to another engine will
     be replicated as CREATE + INSERT
@@ -1994,11 +2015,13 @@ struct Table_period_info: Sql_alloc
 {
   Table_period_info() :
     create_if_not_exists(false),
-    constr(NULL) {}
+    constr(NULL),
+    unique_keys(0) {}
   Table_period_info(const char *name_arg, size_t size) :
     name(name_arg, size),
     create_if_not_exists(false),
-    constr(NULL) {}
+    constr(NULL),
+    unique_keys(0){}
 
   Lex_ident name;
 
@@ -2014,6 +2037,7 @@ struct Table_period_info: Sql_alloc
   start_end_t period;
   bool create_if_not_exists;
   Virtual_column_info *constr;
+  uint unique_keys;
 
   bool is_set() const
   {
@@ -2694,7 +2718,7 @@ public:
   {
     return IO_COEFF*io_count*avg_io_cost +
            IO_COEFF*idx_io_count*idx_avg_io_cost +
-           CPU_COEFF*cpu_cost + 
+           CPU_COEFF*(cpu_cost + idx_cpu_cost) +
            MEM_COEFF*mem_cost + IMPORT_COEFF*import_cost;
   }
 
@@ -3021,10 +3045,12 @@ protected:
   Table_flags cached_table_flags;       /* Set on init() and open() */
 
   ha_rows estimation_rows_to_insert;
+  handler *lookup_handler;
 public:
   handlerton *ht;                 /* storage engine of this handler */
   uchar *ref;				/* Pointer to current row */
   uchar *dup_ref;			/* Pointer to duplicate row */
+  uchar *lookup_buffer;
 
   ha_statistics stats;
 
@@ -3057,6 +3083,7 @@ public:
   */
   bool in_range_check_pushed_down;
 
+  uint lookup_errkey;
   uint errkey;                             /* Last dup key */
   uint key_used_on_scan;
   uint active_index, keyread;
@@ -3064,7 +3091,6 @@ public:
   /** Length of ref (1-8 or the clustered key length) */
   uint ref_length;
   FT_INFO *ft_handler;
-  handler *update_handler;  /* Handler used in case of update */
   enum init_stat { NONE=0, INDEX, RND };
   init_stat inited, pre_inited;
 
@@ -3174,7 +3200,10 @@ private:
 
 public:
   virtual void unbind_psi();
-  virtual int rebind();
+  virtual void rebind_psi();
+  /* Return error if definition doesn't match for already opened table */
+  virtual int discover_check_version() { return 0; }
+
   /**
     Put the handler in 'batch' mode when collecting
     table io instrumented events.
@@ -3221,13 +3250,14 @@ private:
 public:
   handler(handlerton *ht_arg, TABLE_SHARE *share_arg)
     :table_share(share_arg), table(0),
-    estimation_rows_to_insert(0), ht(ht_arg),
-    ref(0), end_range(NULL),
+    estimation_rows_to_insert(0),
+    lookup_handler(this),
+    ht(ht_arg), ref(0), lookup_buffer(NULL), end_range(NULL),
     implicit_emptied(0),
     mark_trx_read_write_done(0),
     check_table_binlog_row_based_done(0),
     check_table_binlog_row_based_result(0),
-    in_range_check_pushed_down(FALSE), errkey(-1),
+    in_range_check_pushed_down(FALSE), lookup_errkey(-1), errkey(-1),
     key_used_on_scan(MAX_KEY),
     active_index(MAX_KEY), keyread(MAX_KEY),
     ref_length(sizeof(my_off_t)),
@@ -3258,9 +3288,12 @@ public:
     DBUG_ASSERT(m_lock_type == F_UNLCK);
     DBUG_ASSERT(inited == NONE);
   }
+  /* To check if table has been properely opened */
+  bool is_open()
+  {
+    return ref != 0;
+  }
   virtual handler *clone(const char *name, MEM_ROOT *mem_root);
-  bool clone_handler_for_update();
-  void delete_update_handler();
   /** This is called after create to allow us to set up cached variables */
   void init()
   {
@@ -3403,7 +3436,7 @@ public:
   int ha_create(const char *name, TABLE *form, HA_CREATE_INFO *info);
 
   int ha_create_partitioning_metadata(const char *name, const char *old_name,
-                                      int action_flag);
+                                      chf_create_flags action_flag);
 
   int ha_change_partitions(HA_CREATE_INFO *create_info,
                            const char *path,
@@ -3461,11 +3494,19 @@ public:
     reset_statistics();
   }
   virtual double scan_time()
-  { return ulonglong2double(stats.data_file_length) / IO_SIZE + 2; }
+  {
+    return ((ulonglong2double(stats.data_file_length) / stats.block_size + 2) *
+            avg_io_cost());
+  }
 
   virtual double key_scan_time(uint index)
   {
     return keyread_time(index, 1, records());
+  }
+
+  virtual double avg_io_cost()
+  {
+   return 1.0;
   }
 
   /**
@@ -3473,7 +3514,8 @@ public:
      to access it.
      
      @param index  The index number.
-     @param ranges The number of ranges to be read.
+     @param ranges The number of ranges to be read. If 0, it means that
+                   we calculate separately the cost of reading the key.
      @param rows   Total number of rows to be read.
      
      This method can be used to calculate the total cost of scanning a table
@@ -3864,8 +3906,9 @@ public:
   virtual int rnd_same(uchar *buf, uint inx)
     { return HA_ERR_WRONG_COMMAND; }
 
-  virtual ha_rows records_in_range(uint inx, key_range *min_key,
-                                   key_range *max_key)
+  virtual ha_rows records_in_range(uint inx, const key_range *min_key,
+                                   const key_range *max_key,
+                                   page_range *res)
     { return (ha_rows) 10; }
   /*
     If HA_PRIMARY_KEY_REQUIRED_FOR_POSITION is set, then it sets ref
@@ -3878,6 +3921,7 @@ public:
   virtual void get_dynamic_partition_info(PARTITION_STATS *stat_info,
                                           uint part_id);
   virtual void set_partitions_to_open(List<String> *partition_names) {}
+  virtual bool check_if_updates_are_ignored(const char *op) const;
   virtual int change_partitions_to_open(List<String> *partition_names)
   { return 0; }
   virtual int extra(enum ha_extra_function operation)
@@ -4057,11 +4101,6 @@ public:
 
   void update_global_table_stats();
   void update_global_index_stats();
-
-#define CHF_CREATE_FLAG 0
-#define CHF_DELETE_FLAG 1
-#define CHF_RENAME_FLAG 2
-#define CHF_INDEX_FLAG  3
 
   /**
     @note lock_count() can return > 1 if the table is MERGE or partitioned.
@@ -4627,7 +4666,7 @@ protected:
 public:
   bool check_table_binlog_row_based();
   bool prepare_for_row_logging();
-  int prepare_for_insert(bool force_update_handler= 0);
+  int prepare_for_insert(bool do_create);
   int binlog_log_row(TABLE *table,
                      const uchar *before_record,
                      const uchar *after_record,
@@ -4651,6 +4690,14 @@ private:
 private:
   void mark_trx_read_write_internal();
   bool check_table_binlog_row_based_internal();
+
+  int create_lookup_handler();
+  void alloc_lookup_buffer();
+  int check_duplicate_long_entries(const uchar *new_rec);
+  int check_duplicate_long_entries_update(const uchar *new_rec);
+  int check_duplicate_long_entry_key(const uchar *new_rec, uint key_no);
+  /** PRIMARY KEY/UNIQUE WITHOUT OVERLAPS check */
+  int ha_check_overlaps(const uchar *old_data, const uchar* new_data);
 
 protected:
   /*
@@ -4887,8 +4934,9 @@ public:
   virtual void drop_table(const char *name);
   virtual int create(const char *name, TABLE *form, HA_CREATE_INFO *info)=0;
 
-  virtual int create_partitioning_metadata(const char *name, const char *old_name,
-                                   int action_flag)
+  virtual int create_partitioning_metadata(const char *name,
+                                           const char *old_name,
+                                           chf_create_flags action_flag)
   { return FALSE; }
 
   virtual int change_partitions(HA_CREATE_INFO *create_info,
@@ -4911,6 +4959,7 @@ public:
     ha_share= arg_ha_share;
     return false;
   }
+  void set_table(TABLE* table_arg) { table= table_arg; }
   int get_lock_type() const { return m_lock_type; }
 public:
   /* XXX to be removed, see ha_partition::partition_ht() */
@@ -5091,9 +5140,11 @@ public:
 int ha_discover_table(THD *thd, TABLE_SHARE *share);
 int ha_discover_table_names(THD *thd, LEX_CSTRING *db, MY_DIR *dirp,
                             Discovered_table_list *result, bool reusable);
-bool ha_table_exists(THD *thd, const LEX_CSTRING *db, const LEX_CSTRING *table_name,
+bool ha_table_exists(THD *thd, const LEX_CSTRING *db,
+                     const LEX_CSTRING *table_name,
                      handlerton **hton= 0, bool *is_sequence= 0);
-bool ha_check_if_updates_are_ignored(THD *thd, handlerton *hton, const char *op);
+bool ha_check_if_updates_are_ignored(THD *thd, handlerton *hton,
+                                     const char *op);
 #endif /* MYSQL_SERVER */
 
 /* key cache */

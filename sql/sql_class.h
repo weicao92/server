@@ -341,8 +341,8 @@ public:
   bool alter_if_exists;
   Alter_column(LEX_CSTRING par_name, Virtual_column_info *expr, bool par_exists)
     :name(par_name), new_name{NULL, 0}, default_value(expr), alter_if_exists(par_exists) {}
-  Alter_column(LEX_CSTRING par_name, LEX_CSTRING _new_name)
-    :name(par_name), new_name(_new_name), default_value(NULL), alter_if_exists(false) {}
+  Alter_column(LEX_CSTRING par_name, LEX_CSTRING _new_name, bool exists)
+    :name(par_name), new_name(_new_name), default_value(NULL), alter_if_exists(exists) {}
   /**
     Used to make a clone of this object for ALTER/CREATE TABLE
     @sa comment for Key_part_spec::clone
@@ -362,9 +362,10 @@ class Alter_rename_key : public Sql_alloc
 public:
   LEX_CSTRING old_name;
   LEX_CSTRING new_name;
+  bool alter_if_exists;
 
-  Alter_rename_key(LEX_CSTRING old_name_arg, LEX_CSTRING new_name_arg)
-      : old_name(old_name_arg), new_name(new_name_arg) {}
+  Alter_rename_key(LEX_CSTRING old_name_arg, LEX_CSTRING new_name_arg, bool exists)
+      : old_name(old_name_arg), new_name(new_name_arg), alter_if_exists(exists) {}
 
   Alter_rename_key *clone(MEM_ROOT *mem_root) const
     { return new (mem_root) Alter_rename_key(*this); }
@@ -382,13 +383,15 @@ public:
   engine_option_value *option_list;
   bool generated;
   bool invisible;
+  bool without_overlaps;
+  Lex_ident period;
 
   Key(enum Keytype type_par, const LEX_CSTRING *name_arg,
       ha_key_alg algorithm_arg, bool generated_arg, DDL_options_st ddl_options)
     :DDL_options(ddl_options),
      type(type_par), key_create_info(default_key_create_info),
     name(*name_arg), option_list(NULL), generated(generated_arg),
-    invisible(false)
+    invisible(false), without_overlaps(false)
   {
     key_create_info.algorithm= algorithm_arg;
   }
@@ -399,7 +402,7 @@ public:
     :DDL_options(ddl_options),
      type(type_par), key_create_info(*key_info_arg), columns(*cols),
     name(*name_arg), option_list(create_opt), generated(generated_arg),
-    invisible(false)
+    invisible(false), without_overlaps(false)
   {}
   Key(const Key &rhs, MEM_ROOT *mem_root);
   virtual ~Key() {}
@@ -1966,8 +1969,8 @@ public:
     init_sql_alloc(key_memory_locked_table_list, &m_locked_tables_root,
                    MEM_ROOT_BLOCK_SIZE, 0, MYF(MY_THREAD_SPECIFIC));
   }
-  void unlock_locked_tables(THD *thd);
-  void unlock_locked_table(THD *thd, MDL_ticket *mdl_ticket);
+  int unlock_locked_tables(THD *thd);
+  int unlock_locked_table(THD *thd, MDL_ticket *mdl_ticket);
   ~Locked_tables_list()
   {
     reset();
@@ -2497,7 +2500,8 @@ public:
   // track down slow pthread_create
   ulonglong  prior_thr_create_utime, thr_create_utime;
   ulonglong  start_utime, utime_after_lock, utime_after_query;
-
+  /* This can be used by handlers to send signals to the SQL level */
+  ulonglong  replication_flags;
   // Process indicator
   struct {
     /*
@@ -4848,6 +4852,7 @@ public:
     TMP_TABLE_ANY
   };
   bool has_thd_temporary_tables();
+  bool has_temporary_tables();
 
   TABLE *create_and_open_tmp_table(LEX_CUSTRING *frm,
                                    const char *path,
@@ -4886,7 +4891,6 @@ private:
   /* Whether a lock has been acquired? */
   bool m_tmp_tables_locked;
 
-  bool has_temporary_tables();
   uint create_tmp_table_def_key(char *key, const char *db,
                                 const char *table_name);
   TMP_TABLE_SHARE *create_temporary_table(LEX_CUSTRING *frm,

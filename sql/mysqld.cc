@@ -167,15 +167,6 @@ extern "C" {					// Because of SCO 3.2V4.2
 #include <crtdbg.h>
 #endif
 
-#ifdef HAVE_SOLARIS_LARGE_PAGES
-#if defined(__sun__) && defined(__GNUC__) && defined(__cplusplus) \
-    && defined(_XOPEN_SOURCE)
-extern int getpagesizes(size_t *, int);
-extern int getpagesizes2(size_t *, int);
-extern int memcntl(caddr_t, size_t, int, caddr_t, int, int);
-#endif /* __sun__ ... */
-#endif /* HAVE_SOLARIS_LARGE_PAGES */
-
 #ifdef _AIX41
 int initgroups(const char *,unsigned int);
 #endif
@@ -596,7 +587,10 @@ DATE_TIME_FORMAT global_date_format, global_datetime_format, global_time_format;
 Time_zone *default_tz;
 
 const char *mysql_real_data_home_ptr= mysql_real_data_home;
-char server_version[SERVER_VERSION_LENGTH], *server_version_ptr;
+extern "C" {
+char server_version[SERVER_VERSION_LENGTH];
+}
+char *server_version_ptr;
 bool using_custom_server_version= false;
 char *mysqld_unix_port, *opt_mysql_tmpdir;
 ulong thread_handling;
@@ -2174,9 +2168,11 @@ static void set_ports()
     */
 
 #if MYSQL_PORT_DEFAULT == 0
+# if !__has_feature(memory_sanitizer) // Work around MSAN deficiency
     struct  servent *serv_ptr;
     if ((serv_ptr= getservbyname("mysql", "tcp")))
       SYSVAR_AUTOSIZE(mysqld_port, ntohs((u_short) serv_ptr->s_port));
+# endif
 #endif
     if ((env = getenv("MYSQL_TCP_PORT")))
     {
@@ -3944,73 +3940,15 @@ static int init_common_variables()
   DBUG_PRINT("info",("%s  Ver %s for %s on %s\n",my_progname,
 		     server_version, SYSTEM_TYPE,MACHINE_TYPE));
 
-#ifdef HAVE_LINUX_LARGE_PAGES
   /* Initialize large page size */
   if (opt_large_pages)
   {
-    SYSVAR_AUTOSIZE(opt_large_page_size, my_get_large_page_size());
-    if (opt_large_page_size)
+    DBUG_PRINT("info", ("Large page set"));
+    if (my_init_large_pages(opt_super_large_pages))
     {
-      DBUG_PRINT("info", ("Large page set, large_page_size = %d",
-                 opt_large_page_size));
-      my_use_large_pages= 1;
-      my_large_page_size= opt_large_page_size;
+      return 1;
     }
-    else
-      SYSVAR_AUTOSIZE(opt_large_pages, 0);
   }
-#endif /* HAVE_LINUX_LARGE_PAGES */
-#ifdef HAVE_SOLARIS_LARGE_PAGES
-#define LARGE_PAGESIZE (4*1024*1024)  /* 4MB */
-#define SUPER_LARGE_PAGESIZE (256*1024*1024)  /* 256MB */
-  if (opt_large_pages)
-  {
-  /*
-    tell the kernel that we want to use 4/256MB page for heap storage
-    and also for the stack. We use 4 MByte as default and if the
-    super-large-page is set we increase it to 256 MByte. 256 MByte
-    is for server installations with GBytes of RAM memory where
-    the MySQL Server will have page caches and other memory regions
-    measured in a number of GBytes.
-    We use as big pages as possible which isn't bigger than the above
-    desired page sizes.
-  */
-   int nelem;
-   size_t max_desired_page_size;
-   if (opt_super_large_pages)
-     max_desired_page_size= SUPER_LARGE_PAGESIZE;
-   else
-     max_desired_page_size= LARGE_PAGESIZE;
-   nelem = getpagesizes(NULL, 0);
-   if (nelem > 0)
-   {
-     size_t *pagesize = (size_t *) malloc(sizeof(size_t) * nelem);
-     if (pagesize != NULL && getpagesizes(pagesize, nelem) > 0)
-     {
-       size_t max_page_size= 0;
-       for (int i= 0; i < nelem; i++)
-       {
-         if (pagesize[i] > max_page_size &&
-             pagesize[i] <= max_desired_page_size)
-            max_page_size= pagesize[i];
-       }
-       free(pagesize);
-       if (max_page_size > 0)
-       {
-         struct memcntl_mha mpss;
-
-         mpss.mha_cmd= MHA_MAPSIZE_BSSBRK;
-         mpss.mha_pagesize= max_page_size;
-         mpss.mha_flags= 0;
-         memcntl(NULL, 0, MC_HAT_ADVISE, (caddr_t)&mpss, 0, 0);
-         mpss.mha_cmd= MHA_MAPSIZE_STACK;
-         memcntl(NULL, 0, MC_HAT_ADVISE, (caddr_t)&mpss, 0, 0);
-       }
-     }
-   }
-  }
-#endif /* HAVE_SOLARIS_LARGE_PAGES */
-
 
 #if defined(HAVE_POOL_OF_THREADS)
   if (IS_SYSVAR_AUTOSIZE(&threadpool_size))
@@ -5099,6 +5037,14 @@ static int init_server_components()
        0, 0, 0, GET_NO_ARG, OPT_ARG, 0, 0, 0, 0, 0, 0},
       {"timed-mutexes", OPT_DEPRECATED_OPTION, "",
        0, 0, 0, GET_NO_ARG, OPT_ARG, 0, 0, 0, 0, 0, 0},
+#if defined(__linux__)
+      /*
+        Linux was the only large page OS that we've now removed the (always)
+        unused super-large-pages (because its Solaris only).
+      */
+      {"super-large-pages", OPT_DEPRECATED_OPTION, "",
+       0, 0, 0, GET_NO_ARG, OPT_ARG, 0, 0, 0, 0, 0, 0},
+#endif
       {0, 0, 0, 0, 0, 0, GET_NO_ARG, NO_ARG, 0, 0, 0, 0, 0, 0}
     };
     /*
@@ -6641,7 +6587,7 @@ struct my_option my_long_options[]=
    "mysql.gtid_slave_pos",
    &gtid_pos_auto_engines, 0, 0, GET_STR, REQUIRED_ARG,
    0, 0, 0, 0, 0, 0 },
-#ifdef HAVE_LARGE_PAGE_OPTION
+#ifdef HAVE_SOLARIS_LARGE_PAGES
   {"super-large-pages", 0, "Enable support for super large pages.",
    &opt_super_large_pages, &opt_super_large_pages, 0,
    GET_BOOL, OPT_ARG, 0, 0, 1, 0, 1, 0},
@@ -7423,6 +7369,16 @@ static int show_threadpool_idle_threads(THD *thd, SHOW_VAR *var, char *buff,
   *(int *)buff= tp_get_idle_thread_count(); 
   return 0;
 }
+
+
+static int show_threadpool_threads(THD *thd, SHOW_VAR *var, char *buff,
+                                   enum enum_var_type scope)
+{
+  var->type= SHOW_INT;
+  var->value= buff;
+  *(reinterpret_cast<int*>(buff))= tp_get_thread_count();
+  return 0;
+}
 #endif
 
 /*
@@ -7642,7 +7598,7 @@ SHOW_VAR status_vars[]= {
 #endif
 #ifdef HAVE_POOL_OF_THREADS
   {"Threadpool_idle_threads",  (char *) &show_threadpool_idle_threads, SHOW_SIMPLE_FUNC},
-  {"Threadpool_threads",       (char *) &tp_stats.num_worker_threads, SHOW_INT},
+  {"Threadpool_threads",       (char *) &show_threadpool_threads, SHOW_SIMPLE_FUNC},
 #endif
   {"Threads_cached",           (char*) &cached_thread_count,    SHOW_LONG_NOFLUSH},
   {"Threads_connected",        (char*) &connection_count,       SHOW_INT},
@@ -7925,8 +7881,8 @@ static int mysql_init_variables(void)
   
   /* Variables that depends on compile options */
 #ifndef DBUG_OFF
-  default_dbug_option=IF_WIN("d:t:i:O,\\mysqld.trace",
-			     "d:t:i:o,/tmp/mysqld.trace");
+  default_dbug_option=IF_WIN("d:t:i:O,\\mariadbd.trace",
+			     "d:t:i:o,/tmp/mariadbd.trace");
   current_dbug_option= default_dbug_option;
 #endif
   opt_error_log= IF_WIN(1,0);

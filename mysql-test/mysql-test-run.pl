@@ -130,6 +130,7 @@ our $path_testlog;
 our $default_vardir;
 our $opt_vardir;                # Path to use for var/ dir
 our $plugindir;
+our $client_plugindir;
 my $path_vardir_trace;          # unix formatted opt_vardir for trace files
 my $opt_tmpdir;                 # Path to use for tmp/ dir
 my $opt_tmpdir_pid;
@@ -1798,7 +1799,7 @@ sub command_line_setup {
   # $ENV{ASAN_OPTIONS}= "log_path=${opt_vardir}/log/asan:" . $ENV{ASAN_OPTIONS};
 
   # Add leak suppressions
-  $ENV{LSAN_OPTIONS}= "suppressions=${glob_mysql_test_dir}/lsan.supp"
+  $ENV{LSAN_OPTIONS}= "suppressions=${glob_mysql_test_dir}/lsan.supp:print_suppressions=0"
     if -f "$glob_mysql_test_dir/lsan.supp" and not IS_WINDOWS;
 
   if ( $opt_gdb || $opt_client_gdb || $opt_ddd || $opt_client_ddd || 
@@ -2154,7 +2155,7 @@ sub find_mysqld {
 
   my ($mysqld_basedir)= $ENV{MTR_BINDIR}|| @_;
 
-  my @mysqld_names= ("mysqld", "mysqld-max-nt", "mysqld-max",
+  my @mysqld_names= ("mariadbd", "mysqld", "mysqld-max-nt", "mysqld-max",
 		     "mysqld-nt");
 
   if ( $opt_debug_server ){
@@ -2784,12 +2785,15 @@ sub setup_vardir() {
   # and make them world readable
   copytree("$glob_mysql_test_dir/std_data", "$opt_vardir/std_data", "0022");
 
-  # create a plugin dir and copy or symlink plugins into it
   unless($plugindir)
   {
+    # create a plugin dir and copy or symlink plugins into it
     if ($source_dist)
     {
       $plugindir="$opt_vardir/plugins";
+      # Source builds collect both client plugins and server plugins in the
+      # same directory.
+      $client_plugindir= $plugindir;
       mkpath($plugindir);
       if (IS_WINDOWS)
       {
@@ -2845,10 +2849,18 @@ sub setup_vardir() {
            <$bindir/lib/plugin/*.so>,             # bintar
            <$bindir/lib/plugin/*.dll>)
       {
-        my $pname=basename($_);
+        my $pname= basename($_);
         set_plugin_var($pname);
-        $plugindir=dirname($_) unless $plugindir;
+        $plugindir= dirname($_) unless $plugindir;
       }
+
+      # Note: client plugins can be installed separately from server plugins,
+      #       as is the case for Debian packaging.
+      for (<$bindir/lib/*/libmariadb3/plugin>)
+      {
+        $client_plugindir= $_ if <$_/*.so>;
+      }
+      $client_plugindir= $plugindir unless $client_plugindir;
     }
   }
 
@@ -4672,7 +4684,7 @@ sub extract_warning_lines ($$) {
 
   my @patterns =
     (
-     qr/^Warning|mysqld: Warning|\[Warning\]/,
+     qr/^Warning|(mysqld|mariadbd): Warning|\[Warning\]/,
      qr/^Error:|\[ERROR\]/,
      qr/^==\d+==\s+\S/, # valgrind errors
      qr/InnoDB: Warning|InnoDB: Error/,
@@ -4747,7 +4759,7 @@ sub extract_warning_lines ($$) {
      qr|Access denied for user|,
      qr|Aborted connection|,
      qr|table.*is full|,
-     qr|\[ERROR\] mysqld: \Z|,  # Warning from Aria recovery
+     qr/\[ERROR\] (mysqld|mariadbd): \Z/,  # Warning from Aria recovery
      qr|Linux Native AIO|, # warning that aio does not work on /dev/shm
      qr|InnoDB: io_setup\(\) attempt|,
      qr|InnoDB: io_setup\(\) failed with EAGAIN|,
@@ -6279,7 +6291,7 @@ sub valgrind_arguments {
   my $exe=  shift;
 
   # Ensure the jemalloc works with mysqld
-  if ($$exe =~ /mysqld/)
+  if ($$exe =~ /(mysqld|mariadbd)/)
   {
     my %somalloc=(
       'system jemalloc' => 'libjemalloc*',

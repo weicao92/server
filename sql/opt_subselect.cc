@@ -1420,9 +1420,10 @@ void get_delayed_table_estimates(TABLE *table,
   /* Calculate cost of scanning the temptable */
   double data_size= COST_MULT(item->jtbm_record_count,
                               hash_sj_engine->tmp_table->s->reclength);
-  /* Do like in handler::read_time */
-  *scan_time= data_size/IO_SIZE + 2;
-} 
+  /* Do like in handler::scan_time() */
+  *scan_time= ((data_size/table->file->stats.block_size+2) *
+               table->file->avg_io_cost());
+}
 
 
 /**
@@ -3144,7 +3145,7 @@ bool Sj_materialization_picker::check_qep(JOIN *join,
       prefix_rec_count= COST_MULT(prefix_rec_count, curpos.records_read);
       prefix_cost= COST_ADD(prefix_cost, curpos.read_time);
       prefix_cost= COST_ADD(prefix_cost,
-                            prefix_rec_count / (double) TIME_FOR_COMPARE);
+                            prefix_rec_count / TIME_FOR_COMPARE);
       //TODO: take into account join condition selectivity here
     }
 
@@ -4458,12 +4459,12 @@ SJ_TMP_TABLE::create_sj_weedout_tmp_table(THD *thd)
     temp_pool_slot = bitmap_lock_set_next(&temp_pool);
 
   if (temp_pool_slot != MY_BIT_NONE) // we got a slot
-    sprintf(path, "%s_%lx_%i", tmp_file_prefix,
+    sprintf(path, "%s-subquery-%lx-%i", tmp_file_prefix,
 	    current_pid, temp_pool_slot);
   else
   {
     /* if we run out of slots or we are not using tempool */
-    sprintf(path,"%s%lx_%lx_%x", tmp_file_prefix,current_pid,
+    sprintf(path,"%s-subquery-%lx-%lx-%x", tmp_file_prefix,current_pid,
             (ulong) thd->thread_id, thd->tmp_table++);
   }
   fn_format(path, path, mysql_tmpdir, "", MY_REPLACE_EXT|MY_UNPACK_FILENAME);

@@ -78,7 +78,10 @@ DYNAMIC_ARRAY binlog_events; // Storing the events output string
 DYNAMIC_ARRAY events_in_stmt; // Storing the events that in one statement
 String stop_event_string; // Storing the STOP_EVENT output string
 
+extern "C" {
 char server_version[SERVER_VERSION_LENGTH];
+}
+
 ulong server_id = 0;
 
 // needed by net_serv.c
@@ -94,7 +97,7 @@ static char *result_file_name= 0;
 static const char *output_prefix= "";
 
 #ifndef DBUG_OFF
-static const char *default_dbug_option = "d:t:o,/tmp/mysqlbinlog.trace";
+static const char *default_dbug_option = "d:t:o,/tmp/mariadb-binlog.trace";
 const char *current_dbug_option= default_dbug_option;
 #endif
 static const char *load_groups[]=

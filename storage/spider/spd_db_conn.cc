@@ -3138,6 +3138,11 @@ int spider_db_fetch_table(
     } else {
       if (result_list->current_row_num < result_list->quick_page_size)
       {
+        if (!current->first_position)
+        {
+          table->status = STATUS_NOT_FOUND;
+          DBUG_RETURN(HA_ERR_END_OF_FILE);
+        }
         row = current->first_position[result_list->current_row_num].row;
       } else {
         if ((error_num = spider_db_get_row_from_tmp_tbl(
@@ -3240,6 +3245,9 @@ int spider_db_fetch_table(
 #ifndef DBUG_OFF
         dbug_tmp_restore_column_map(table->write_set, tmp_map);
 #endif
+      } else {
+        DBUG_PRINT("info", ("spider bitmap is not set %s",
+          SPIDER_field_name_str(*field)));
       }
       row->next();
     }
@@ -3336,6 +3344,11 @@ int spider_db_fetch_key(
   } else {
     if (result_list->current_row_num < result_list->quick_page_size)
     {
+      if (!current->first_position)
+      {
+        table->status = STATUS_NOT_FOUND;
+        DBUG_RETURN(HA_ERR_END_OF_FILE);
+      }
       row = current->first_position[result_list->current_row_num].row;
     } else {
       if ((error_num = spider_db_get_row_from_tmp_tbl(
@@ -3446,6 +3459,11 @@ int spider_db_fetch_minimum_columns(
     {
       DBUG_PRINT("info", ("spider current=%p", current));
       DBUG_PRINT("info", ("spider first_position=%p", current->first_position));
+      if (!current->first_position)
+      {
+        table->status = STATUS_NOT_FOUND;
+        DBUG_RETURN(HA_ERR_END_OF_FILE);
+      }
       DBUG_PRINT("info", ("spider current_row_num=%lld", result_list->current_row_num));
       DBUG_PRINT("info", ("spider first_position[]=%p", &current->first_position[result_list->current_row_num]));
       row = current->first_position[result_list->current_row_num].row;
@@ -5987,8 +6005,8 @@ int spider_db_show_index(
 }
 
 ha_rows spider_db_explain_select(
-  key_range *start_key,
-  key_range *end_key,
+  const key_range *start_key,
+  const key_range *end_key,
   ha_spider *spider,
   int link_idx
 ) {

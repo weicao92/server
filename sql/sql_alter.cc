@@ -322,7 +322,8 @@ Alter_table_ctx::Alter_table_ctx(THD *thd, TABLE_LIST *table_list,
   }
 
   tmp_name.str= tmp_name_buff;
-  tmp_name.length= my_snprintf(tmp_name_buff, sizeof(tmp_name_buff), "%s-%lx_%llx",
+  tmp_name.length= my_snprintf(tmp_name_buff, sizeof(tmp_name_buff),
+                               "%s-alter-%lx-%llx",
                                tmp_file_prefix, current_pid, thd->thread_id);
   /* Safety fix for InnoDB */
   if (lower_case_table_names)
@@ -375,9 +376,6 @@ bool Sql_cmd_alter_table::execute(THD *thd)
   SELECT_LEX *select_lex= lex->first_select_lex();
   /* first table of first SELECT_LEX */
   TABLE_LIST *first_table= (TABLE_LIST*) select_lex->table_list.first;
-
-  if (thd->variables.option_bits & OPTION_IF_EXISTS)
-    lex->create_info.set(DDL_options_st::OPT_IF_EXISTS);
 
   const bool used_engine= lex->create_info.used_fields & HA_CREATE_USED_ENGINE;
   DBUG_ASSERT((m_storage_engine_name.str != NULL) == used_engine);

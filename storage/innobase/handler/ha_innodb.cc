@@ -199,9 +199,6 @@ static ulong	innodb_flush_method;
 stopword table to be used */
 static char*	innobase_server_stopword_table;
 
-/* Below we have boolean-valued start-up parameters, and their default
-values */
-
 static my_bool	innobase_use_atomic_writes;
 static my_bool	innobase_rollback_on_timeout;
 static my_bool	innobase_create_status_file;
@@ -216,6 +213,9 @@ extern uint srv_n_fil_crypt_iops;
 #ifdef UNIV_DEBUG
 my_bool innodb_evict_tables_on_commit_debug;
 #endif
+
+/** File format constraint for ALTER TABLE */
+ulong innodb_instant_alter_column_allowed;
 
 /** Note we cannot use rec_format_enum because we do not allow
 COMPRESSED row format for innodb_default_row_format option. */
@@ -392,6 +392,22 @@ static TYPELIB innodb_change_buffering_typelib = {
 	array_elements(innodb_change_buffering_names) - 1,
 	"innodb_change_buffering_typelib",
 	innodb_change_buffering_names,
+	NULL
+};
+
+/** Allowed values of innodb_instant_alter_column_allowed */
+const char* innodb_instant_alter_column_allowed_names[] = {
+	"never", /* compatible with MariaDB 5.5 to 10.2 */
+	"add_last",/* allow instant ADD COLUMN ... LAST */
+	"add_drop_reorder", /* allow instant ADD anywhere & DROP & reorder */
+	NullS
+};
+
+/** Enumeration of innodb_instant_alter_column_allowed */
+static TYPELIB innodb_instant_alter_column_allowed_typelib = {
+	array_elements(innodb_instant_alter_column_allowed_names) - 1,
+	"innodb_instant_alter_column_allowed_typelib",
+	innodb_instant_alter_column_allowed_names,
 	NULL
 };
 
@@ -1074,6 +1090,8 @@ static SHOW_VAR innodb_status_variables[]= {
    &export_vars.innodb_n_temp_blocks_encrypted, SHOW_LONGLONG},
   {"encryption_n_temp_blocks_decrypted",
    &export_vars.innodb_n_temp_blocks_decrypted, SHOW_LONGLONG},
+  {"encryption_num_key_requests", &export_vars.innodb_encryption_key_requests,
+   SHOW_LONGLONG},
 
   {NullS, NullS, SHOW_LONG}
 };
@@ -12429,7 +12447,8 @@ create_table_info_t::create_foreign_keys()
 			/* How could one make a referenced table to be a
 			 * partition? */
 			ut_ad(0);
-			my_error(ER_FOREIGN_KEY_ON_PARTITIONED, MYF(0));
+			my_error(ER_FEATURE_NOT_SUPPORTED_WITH_PARTITIONING,
+				 MYF(0), "FOREIGN KEY");
 			return (DB_CANNOT_ADD_CONSTRAINT);
 		}
 
@@ -13936,10 +13955,11 @@ ha_rows
 ha_innobase::records_in_range(
 /*==========================*/
 	uint			keynr,		/*!< in: index number */
-	key_range		*min_key,	/*!< in: start key value of the
+	const key_range		*min_key,	/*!< in: start key value of the
 						range, may also be 0 */
-	key_range		*max_key)	/*!< in: range end key val, may
+	const key_range		*max_key,	/*!< in: range end key val, may
 						also be 0 */
+        page_range              *pages)
 {
 	KEY*		key;
 	dict_index_t*	index;
@@ -14028,8 +14048,12 @@ ha_innobase::records_in_range(
 			n_rows = rtr_estimate_n_rows_in_range(
 				index, range_start, mode1);
 		} else {
+                        btr_pos_t tuple1(range_start, mode1, pages->first_page);
+                        btr_pos_t tuple2(range_end,   mode2, pages->last_page);
 			n_rows = btr_estimate_n_rows_in_range(
-				index, range_start, mode1, range_end, mode2);
+                                 index, &tuple1, &tuple2);
+                        pages->first_page= tuple1.page_id.raw();
+                        pages->last_page=  tuple2.page_id.raw();
 		}
 	} else {
 
@@ -18255,10 +18279,8 @@ innodb_buffer_pool_evict_uncompressed()
 		ut_ad(buf_block_get_state(block) == BUF_BLOCK_FILE_PAGE);
 		ut_ad(block->in_unzip_LRU_list);
 		ut_ad(block->page.in_LRU_list);
-		mutex_enter(&block->mutex);
 
 		if (!buf_LRU_free_page(&block->page, false)) {
-			mutex_exit(&block->mutex);
 			all_evicted = false;
 		}
 		block = prev_block;
@@ -19150,6 +19172,12 @@ static MYSQL_SYSVAR_BOOL(stats_include_delete_marked,
   PLUGIN_VAR_OPCMDARG,
   "Include delete marked records when calculating persistent statistics",
   NULL, NULL, FALSE);
+
+static MYSQL_SYSVAR_ENUM(instant_alter_column_allowed,
+			 innodb_instant_alter_column_allowed,
+  PLUGIN_VAR_RQCMDARG,
+  "File format constraint for ALTER TABLE", NULL, NULL, 2/*add_drop_reorder*/,
+  &innodb_instant_alter_column_allowed_typelib);
 
 static MYSQL_SYSVAR_ULONG(io_capacity, srv_io_capacity,
   PLUGIN_VAR_RQCMDARG,
@@ -20331,6 +20359,7 @@ static struct st_mysql_sys_var* innobase_system_variables[]= {
   MYSQL_SYSVAR(random_read_ahead),
   MYSQL_SYSVAR(read_ahead_threshold),
   MYSQL_SYSVAR(read_only),
+  MYSQL_SYSVAR(instant_alter_column_allowed),
   MYSQL_SYSVAR(io_capacity),
   MYSQL_SYSVAR(io_capacity_max),
   MYSQL_SYSVAR(page_cleaners),

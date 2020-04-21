@@ -1828,7 +1828,7 @@ inline void mtr_t::log_file_op(mfile_type_t type, ulint space_id,
   ut_ad(strchr(path, OS_PATH_SEPARATOR) != NULL);
   ut_ad(!strcmp(&path[strlen(path) - strlen(DOT_IBD)], DOT_IBD));
 
-  set_modified();
+  flag_modified();
   if (m_log_mode != MTR_LOG_ALL)
     return;
   m_last= nullptr;
@@ -2200,8 +2200,8 @@ fil_close_tablespace(
 
 	/* Invalidate in the buffer pool all pages belonging to the
 	tablespace. Since we have set space->stop_new_ops = true, readahead
-	or ibuf merge can no longer read more pages of this tablespace to the
-	buffer pool. Thus we can clean the tablespace out of the buffer pool
+	can no longer read more pages of this tablespace to buf_pool.
+	Thus we can clean the tablespace out of buf_pool
 	completely and permanently. The flag stop_new_ops also prevents
 	fil_flush() from being applied to this tablespace. */
 	buf_LRU_flush_or_remove_pages(id, true);
@@ -2272,14 +2272,14 @@ dberr_t fil_delete_tablespace(ulint id, bool if_exists)
 				       " in the tablespace memory cache.";
 		}
 
-		return(err);
+		goto func_exit;
 	}
 
 	ut_a(space);
 	ut_a(path != 0);
 
 	/* IMPORTANT: Because we have set space::stop_new_ops there
-	can't be any new ibuf merges, reads or flushes. We are here
+	can't be any new reads or flushes. We are here
 	because node::n_pending was zero above. However, it is still
 	possible to have pending read and write requests:
 
@@ -2367,8 +2367,9 @@ dberr_t fil_delete_tablespace(ulint id, bool if_exists)
 		err = DB_TABLESPACE_NOT_FOUND;
 	}
 
+func_exit:
 	ut_free(path);
-
+	ibuf_delete_for_discarded_space(id);
 	return(err);
 }
 
@@ -2980,8 +2981,6 @@ fil_ibd_open(
 		ut_ad(!srv_read_only_mode);
 		ut_ad(srv_log_file_size != 0);
 	}
-
-	ut_ad(fil_type_is_data(purpose));
 
 	/* Table flags can be ULINT_UNDEFINED if
 	dict_tf_to_fsp_flags_failure is set. */
@@ -4016,8 +4015,7 @@ fil_io(
 
 	/* Open file if closed */
 	if (!fil_node_prepare_for_io(node, space)) {
-		if (fil_type_is_data(space->purpose)
-		    && fil_is_user_tablespace_id(space->id)) {
+		if (fil_is_user_tablespace_id(space->id)) {
 			mutex_exit(&fil_system.mutex);
 
 			if (!ignore) {
@@ -4043,11 +4041,7 @@ fil_io(
 		ut_a(0);
 	}
 
-	/* Check that at least the start offset is within the bounds of a
-	single-table tablespace, including rollback tablespaces. */
-	if (node->size <= cur_page_no
-	    && space->id != TRX_SYS_SPACE
-	    && fil_type_is_data(space->purpose)) {
+	if (space->id && node->size <= cur_page_no) {
 		if (ignore) {
 			/* If we can tolerate the non-existent pages, we
 			should return with DB_ERROR and let caller decide

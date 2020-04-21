@@ -5003,7 +5003,8 @@ mysql_execute_command(THD *thd)
     if (thd->variables.option_bits & OPTION_TABLE_LOCK)
     {
       res= trans_commit_implicit(thd);
-      thd->locked_tables_list.unlock_locked_tables(thd);
+      if (thd->locked_tables_list.unlock_locked_tables(thd))
+        res= 1;
       thd->mdl_context.release_transactional_locks();
       thd->variables.option_bits&= ~(OPTION_TABLE_LOCK);
     }
@@ -5017,7 +5018,8 @@ mysql_execute_command(THD *thd)
   case SQLCOM_LOCK_TABLES:
     /* We must end the transaction first, regardless of anything */
     res= trans_commit_implicit(thd);
-    thd->locked_tables_list.unlock_locked_tables(thd);
+    if (thd->locked_tables_list.unlock_locked_tables(thd))
+      res= 1;
     /* Release transactional metadata locks. */
     thd->mdl_context.release_transactional_locks();
     if (res)
@@ -5904,6 +5906,8 @@ mysql_execute_command(THD *thd)
   case SQLCOM_CALL:
   case SQLCOM_REVOKE:
   case SQLCOM_GRANT:
+    if (thd->variables.option_bits & OPTION_IF_EXISTS)
+      lex->create_info.set(DDL_options_st::OPT_IF_EXISTS);
     DBUG_ASSERT(lex->m_sql_cmd != NULL);
     res= lex->m_sql_cmd->execute(thd);
     DBUG_PRINT("result", ("res: %d  killed: %d  is_error: %d",
@@ -9138,8 +9142,8 @@ kill_one_thread(THD *thd, longlong id, killed_state kill_signal, killed_type typ
     else
       error= (type == KILL_TYPE_QUERY ? ER_KILL_QUERY_DENIED_ERROR :
                                         ER_KILL_DENIED_ERROR);
-    mysql_mutex_unlock(&tmp->LOCK_thd_kill);
     if (WSREP(tmp)) mysql_mutex_unlock(&tmp->LOCK_thd_data);
+    mysql_mutex_unlock(&tmp->LOCK_thd_kill);
   }
   DBUG_PRINT("exit", ("%d", error));
   DBUG_RETURN(error);

@@ -309,8 +309,7 @@ do_rename(THD *thd, TABLE_LIST *ren_table, const LEX_CSTRING *new_db,
       Shared table. Just drop the old .frm as it's not correct anymore
       Discovery will find the old table when it's accessed
      */
-    tdc_remove_table(thd, TDC_RT_REMOVE_ALL,
-                     ren_table->db.str, ren_table->table_name.str);
+    tdc_remove_table(thd, ren_table->db.str, ren_table->table_name.str);
     quick_rm_table(thd, 0, &ren_table->db, &old_alias, FRM_ONLY, 0);
     DBUG_RETURN(0);
   }
@@ -329,14 +328,14 @@ do_rename(THD *thd, TABLE_LIST *ren_table, const LEX_CSTRING *new_db,
     DBUG_RETURN(1);
 #endif
 
-  tdc_remove_table(thd, TDC_RT_REMOVE_ALL,
-                   ren_table->db.str, ren_table->table_name.str);
+  tdc_remove_table(thd, ren_table->db.str, ren_table->table_name.str);
 
   if (hton != view_pseudo_hton)
   {
     if (hton->flags & HTON_TABLE_MAY_NOT_EXIST_ON_SLAVE)
       *force_if_exists= 1;
 
+    thd->replication_flags= 0;
     if (!(rc= mysql_rename_table(hton, &ren_table->db, &old_alias,
                                  new_db, &new_alias, 0)))
     {
@@ -359,6 +358,8 @@ do_rename(THD *thd, TABLE_LIST *ren_table, const LEX_CSTRING *new_db,
                                   &ren_table->db, &old_alias, NO_FK_CHECKS);
       }
     }
+    if (thd->replication_flags & OPTION_IF_EXISTS)
+      *force_if_exists= 1;
   }
   else
   {
@@ -400,8 +401,8 @@ do_rename(THD *thd, TABLE_LIST *ren_table, const LEX_CSTRING *new_db,
     empty.
 
   RETURN
-    false     Ok
-    true      rename failed
+    0         Ok
+    table     pointer to the table list element which rename failed
 */
 
 static TABLE_LIST *

@@ -562,8 +562,11 @@ page_copy_rec_list_end(
 
 	const mtr_log_t log_mode = new_page_zip
 		? mtr->set_log_mode(MTR_LOG_NONE) : MTR_LOG_NONE;
-	ut_d(const bool was_empty = page_dir_get_n_heap(new_page)
-	     == PAGE_HEAP_NO_USER_LOW);
+	const bool was_empty = page_dir_get_n_heap(new_page)
+		== PAGE_HEAP_NO_USER_LOW;
+	alignas(2) byte h[PAGE_N_DIRECTION + 2 - PAGE_LAST_INSERT];
+	memcpy_aligned<2>(h, PAGE_HEADER + PAGE_LAST_INSERT + new_page,
+			  sizeof h);
 
 	if (index->is_spatial()) {
 		ulint	max_to_move = page_get_n_recs(
@@ -584,6 +587,11 @@ page_copy_rec_list_end(
 	} else {
 		page_copy_rec_list_end_no_locks(new_block, block, rec,
 						index, mtr);
+		if (was_empty) {
+			mtr->memcpy<mtr_t::MAYBE_NOP>(*new_block, PAGE_HEADER
+						      + PAGE_LAST_INSERT
+						      + new_page, h, sizeof h);
+		}
 	}
 
 	/* Update PAGE_MAX_TRX_ID on the uncompressed page.
@@ -970,12 +978,12 @@ page_delete_rec_list_end(
     ut_ad(slot_index > 0);
   }
 
-  mtr->write<2,mtr_t::OPT>(*block, my_assume_aligned<2>
-                           (PAGE_N_DIR_SLOTS + PAGE_HEADER + block->frame),
-                           slot_index + 1);
-  mtr->write<2,mtr_t::OPT>(*block, my_assume_aligned<2>
-                           (PAGE_LAST_INSERT + PAGE_HEADER + block->frame),
-                           0U);
+  mtr->write<2,mtr_t::MAYBE_NOP>(*block, my_assume_aligned<2>
+                                 (PAGE_N_DIR_SLOTS + PAGE_HEADER +
+                                  block->frame), slot_index + 1);
+  mtr->write<2,mtr_t::MAYBE_NOP>(*block, my_assume_aligned<2>
+                                 (PAGE_LAST_INSERT + PAGE_HEADER +
+                                  block->frame), 0U);
   /* Catenate the deleted chain segment to the page free list */
   alignas(4) byte page_header[4];
   byte *page_free= my_assume_aligned<4>(PAGE_HEADER + PAGE_FREE +
@@ -1001,7 +1009,7 @@ page_delete_rec_list_end(
 
   if (page_is_comp(block->frame))
   {
-    mtr->write<2,mtr_t::OPT>(*block, slot, PAGE_NEW_SUPREMUM);
+    mtr->write<2,mtr_t::MAYBE_NOP>(*block, slot, PAGE_NEW_SUPREMUM);
     byte *owned= PAGE_NEW_SUPREMUM - REC_NEW_N_OWNED + block->frame;
     byte new_owned= static_cast<byte>((*owned & ~REC_N_OWNED_MASK) |
                                       n_owned << REC_N_OWNED_SHIFT);
@@ -1021,7 +1029,7 @@ page_delete_rec_list_end(
       return;
     }
 #endif
-    mtr->write<1,mtr_t::OPT>(*block, owned, new_owned);
+    mtr->write<1,mtr_t::MAYBE_NOP>(*block, owned, new_owned);
     mtr->write<2>(*block, prev_rec - REC_NEXT, static_cast<uint16_t>
                   (PAGE_NEW_SUPREMUM - page_offset(prev_rec)));
     mtr->write<2>(*block, last_rec - REC_NEXT, free
@@ -1030,11 +1038,11 @@ page_delete_rec_list_end(
   }
   else
   {
-    mtr->write<2,mtr_t::OPT>(*block, slot, PAGE_OLD_SUPREMUM);
+    mtr->write<2,mtr_t::MAYBE_NOP>(*block, slot, PAGE_OLD_SUPREMUM);
     byte *owned= PAGE_OLD_SUPREMUM - REC_OLD_N_OWNED + block->frame;
     byte new_owned= static_cast<byte>((*owned & ~REC_N_OWNED_MASK) |
                                       n_owned << REC_N_OWNED_SHIFT);
-    mtr->write<1,mtr_t::OPT>(*block, owned, new_owned);
+    mtr->write<1,mtr_t::MAYBE_NOP>(*block, owned, new_owned);
     mtr->write<2>(*block, prev_rec - REC_NEXT, PAGE_OLD_SUPREMUM);
     mtr->write<2>(*block, last_rec - REC_NEXT, free);
   }
