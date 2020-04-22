@@ -956,14 +956,27 @@ void btr_page_get_father(dict_index_t* index, buf_block_t* block, mtr_t* mtr,
 /** PAGE_INDEX_ID value for freed index B-trees */
 constexpr index_id_t	BTR_FREED_INDEX_ID = 0;
 
+/** Invalidate PAGE_INDEX_ID for the root page.
+@param[in,out]	block	index root page
+@param[in,out]	mtr	mini-transaction */
+static void btr_invalidate_index_id(buf_block_t *block, mtr_t *mtr)
+{
+  constexpr uint16_t field= PAGE_HEADER + PAGE_INDEX_ID;
+  byte *page_index_id= my_assume_aligned<2>(field + block->frame);
+
+  if (mtr->write<8,mtr_t::MAYBE_NOP>(*block, page_index_id,
+                                     BTR_FREED_INDEX_ID) &&
+      UNIV_LIKELY_NULL(block->page.zip.data))
+    memcpy_aligned<2>(&block->page.zip.data[field], page_index_id, 8);
+}
+
 /** Free a B-tree root page. btr_free_but_not_root() must already
 have been called.
 In a persistent tablespace, the caller must invoke fsp_init_file_page()
 before mtr.commit().
 @param[in,out]	block		index root page
-@param[in,out]	mtr		mini-transaction
-@param[in]	invalidate	whether to invalidate PAGE_INDEX_ID */
-static void btr_free_root(buf_block_t *block, mtr_t *mtr, bool invalidate)
+@param[in,out]	mtr		mini-transaction */
+static void btr_free_root(buf_block_t *block, mtr_t *mtr)
 {
   ut_ad(mtr_memo_contains_flagged(mtr, block,
 				  MTR_MEMO_PAGE_X_FIX | MTR_MEMO_PAGE_SX_FIX));
@@ -975,16 +988,6 @@ static void btr_free_root(buf_block_t *block, mtr_t *mtr, bool invalidate)
   ut_a(btr_root_fseg_validate(PAGE_HEADER + PAGE_BTR_SEG_TOP + block->frame,
 			      block->page.id.space()));
 #endif /* UNIV_BTR_DEBUG */
-  if (invalidate)
-  {
-    constexpr uint16_t field= PAGE_HEADER + PAGE_INDEX_ID;
-
-    byte *page_index_id= my_assume_aligned<2>(field + block->frame);
-    if (mtr->write<8,mtr_t::MAYBE_NOP>(*block, page_index_id,
-                                       BTR_FREED_INDEX_ID) &&
-        UNIV_LIKELY_NULL(block->page.zip.data))
-      memcpy_aligned<2>(&block->page.zip.data[field], page_index_id, 8);
-  }
 
   /* Free the entire segment in small steps. */
   while (!fseg_free_step(PAGE_HEADER + PAGE_BTR_SEG_TOP + block->frame,
@@ -1102,8 +1105,10 @@ btr_create(
 				 PAGE_HEADER + PAGE_BTR_SEG_LEAF, mtr)) {
 			/* Not enough space for new segment, free root
 			segment before return. */
-			btr_free_root(block, mtr,
-				      !index || !index->table->is_temporary());
+			if (!index || !index->table->is_temporary())
+			  btr_invalidate_index_id(block, mtr);
+
+			btr_free_root(block, mtr);
 			return(FIL_NULL);
 		}
 
@@ -1205,6 +1210,9 @@ leaf_loop:
 
 	bool finished = fseg_free_step(root + PAGE_HEADER + PAGE_BTR_SEG_LEAF,
 				       true, &mtr);
+	if (block->page.id.space() == TRX_SYS_SPACE)
+		mtr.freed_system_tablespace_page();
+
 	mtr_commit(&mtr);
 
 	if (!finished) {
@@ -1253,7 +1261,8 @@ btr_free_if_exists(
 
 	btr_free_but_not_root(root, mtr->get_log_mode());
 	mtr->set_named_space_id(page_id.space());
-	btr_free_root(root, mtr, true);
+	btr_invalidate_index_id(root, mtr);
+	btr_free_root(root, mtr);
 }
 
 /** Free an index tree in a temporary tablespace.
@@ -1268,7 +1277,7 @@ void btr_free(const page_id_t page_id)
 
 	if (block) {
 		btr_free_but_not_root(block, MTR_LOG_NO_REDO);
-		btr_free_root(block, &mtr, false);
+		btr_free_root(block, &mtr);
 	}
 	mtr.commit();
 }

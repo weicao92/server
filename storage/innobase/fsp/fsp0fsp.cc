@@ -557,7 +557,7 @@ void fsp_header_init(fil_space_t* space, ulint size, mtr_t* mtr)
 	mtr_x_lock_space(space, mtr);
 
 	const auto savepoint = mtr->get_savepoint();
-	buf_block_t* block = buf_page_create(page_id, zip_size, mtr);
+	buf_block_t* block = buf_page_create(space, 0, zip_size, mtr);
 	mtr->sx_latch_at_savepoint(savepoint, block);
 	buf_block_dbg_add_level(block, SYNC_FSP_PAGE);
 
@@ -878,8 +878,9 @@ fsp_fill_free_list(
 
 			if (i > 0) {
 				const auto savepoint = mtr->get_savepoint();
-				block= buf_page_create(page_id_t(space->id, i),
-						       zip_size, mtr);
+				block= buf_page_create(
+					space, static_cast<uint32_t>(i),
+					zip_size, mtr);
 				mtr->sx_latch_at_savepoint(savepoint, block);
 
 				buf_block_dbg_add_level(block, SYNC_FSP_PAGE);
@@ -901,8 +902,9 @@ fsp_fill_free_list(
 				ibuf_mtr.set_named_space(space);
 
 				block = buf_page_create(
-					page_id_t(space->id,
-						  i + FSP_IBUF_BITMAP_OFFSET),
+					space,
+					static_cast<uint32_t>(
+						i + FSP_IBUF_BITMAP_OFFSET),
 					zip_size, &ibuf_mtr);
 				ibuf_mtr.sx_latch_at_savepoint(0, block);
 				buf_block_dbg_add_level(block, SYNC_FSP_PAGE);
@@ -1064,8 +1066,9 @@ fsp_page_create(
 	rw_lock_type_t		rw_latch,
 	mtr_t*			mtr)
 {
-	buf_block_t*	block = buf_page_create(page_id_t(space->id, offset),
-						space->zip_size(), mtr);
+	buf_block_t*	block = buf_page_create(
+					space, static_cast<uint32_t>(offset),
+					space->zip_size(), mtr);
 
 	/* The latch may already have been acquired, so we cannot invoke
 	mtr_t::x_latch_at_savepoint() or mtr_t::sx_latch_at_savepoint(). */
@@ -1256,7 +1259,7 @@ static void fsp_free_page(fil_space_t* space, page_no_t offset, mtr_t* mtr)
 		return;
 	}
 
-	mtr->free(page_id_t(space->id, offset));
+	mtr->free(*space, static_cast<uint32_t>(offset));
 
 	const ulint	bit = offset % FSP_EXTENT_SIZE;
 
@@ -2606,7 +2609,7 @@ fseg_free_page_low(
 		fsp_free_extent(space, offset, mtr);
 	}
 
-	mtr->free(page_id_t(space->id, offset));
+	mtr->free(*space, static_cast<uint32_t>(offset));
 }
 
 #ifndef BTR_CUR_HASH_ADAPT
@@ -2647,6 +2650,8 @@ fseg_free_page_func(
 	}
 
 	fseg_free_page_low(seg_inode, iblock, space, offset, ahi, mtr);
+
+	mtr->add_freed_pages(static_cast<uint32_t>(offset));
 
 	buf_page_free(page_id_t(space->id, offset), mtr, __FILE__, __LINE__);
 
@@ -2761,6 +2766,9 @@ fseg_free_extent(
 			  page_id_t(space->id, first_page_in_extent + i),
 			  mtr, __FILE__, __LINE__);
 		}
+
+		mtr->add_freed_pages(
+			static_cast<uint32_t>(first_page_in_extent + i));
 	}
 }
 

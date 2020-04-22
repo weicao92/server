@@ -35,9 +35,8 @@ Created 10/25/1995 Heikki Tuuri
 #include "log0recv.h"
 #include "dict0types.h"
 #include "intrusive_list.h"
-#ifdef UNIV_LINUX
 # include <set>
-#endif
+#include <mutex>
 
 struct unflushed_spaces_tag_t;
 struct rotation_list_tag_t;
@@ -61,6 +60,36 @@ enum fil_type_t {
 };
 
 struct fil_node_t;
+
+/** Structure to store freed page ranges. */
+class range_t {
+private:
+mutable uint32_t first_val;
+mutable uint32_t last_val;
+public:
+range_t() : first_val(0), last_val(0) {}
+range_t (uint32_t st_val) { first_val = last_val = st_val; }
+range_t (uint32_t st_val,
+         uint32_t end_val) : first_val (st_val),last_val(end_val) {}
+range_t(const range_t& o) : first_val(o.first_val), last_val(o.last_val)
+	{}
+range_t(range_t&& o) : first_val(std::move(o.first_val)),
+		       last_val(std::move(o.last_val)) {}
+uint32_t& last() const { return last_val; }
+void set_last(uint32_t val) const { last_val = val; }
+void set_first(uint32_t val) const { first_val = val; }
+uint32_t& first() const { return first_val; }
+};
+
+struct range_compare
+{
+  bool operator() (const range_t& lhs, const range_t& rhs) const
+  {
+    return lhs.first() < rhs.first();
+  }
+};
+
+typedef std::set<range_t, range_compare> range_set_t;
 
 #endif
 
@@ -153,6 +182,16 @@ struct fil_space_t
 	/** True if file system storing this tablespace supports
 	punch hole */
 	bool		punch_hole;
+
+	/** mutex to protect freed ranges */ 
+	std::mutex	freed_mutex;
+
+	/** Variables to store freed ranges. This can be used
+	to write zeroes/punch the hole in files */
+	range_set_t*	freed_ranges;
+
+	/** Stores last page freed lsn */
+	lsn_t		last_freed_lsn;
 
 	ulint		magic_n;/*!< FIL_SPACE_MAGIC_N */
 
@@ -247,6 +286,14 @@ struct fil_space_t
 	void release_for_io() { ut_ad(pending_io()); n_pending_ios--; }
 	/** @return whether I/O is pending */
 	bool pending_io() const { return n_pending_ios; }
+	/** @return last_freed_lsn */
+	lsn_t get_last_freed_lsn() { return last_freed_lsn; }
+	/** Update last_freed_lsn */
+	void update_last_freed_lsn(lsn_t lsn)
+	{
+          std::lock_guard<std::mutex>	freed_lock(freed_mutex);
+          last_freed_lsn= lsn;
+	}
 #endif /* !UNIV_INNOCHECKSUM */
 	/** FSP_SPACE_FLAGS and FSP_FLAGS_MEM_ flags;
 	check fsp0types.h to more info about flags. */
@@ -516,6 +563,145 @@ struct fil_space_t
 		return(ssize == 0 || !is_ibd
 		       || srv_page_size != UNIV_PAGE_SIZE_ORIG);
 	}
+
+#ifndef UNIV_INNOCHECKSUM
+
+  /** Merge the freed page ranges with previous freed page ranges.
+  @param[in] range	range to be merged */
+  void merge_range(const range_set_t::iterator& range)
+  {
+    if (range == freed_ranges->begin())
+      return;
+
+    auto prev_range = std::prev(range, 1);
+    if ((*range).first() != (*prev_range).last() + 1)
+      return;
+
+    /* Merge the current range with previous range */
+    (*prev_range).set_last((*range).last());
+
+    freed_ranges->erase(*range);
+  }
+
+  /** Split the range and add two more range in freed ranges
+  @param[in] range	range to be split
+  @param[in] offset	page to be removed from range */
+  void split_range(const range_t& range, int32_t offset)
+  {
+    uint32_t& split1_start_val = range.first();
+    uint32_t& split2_end_val = range.last();
+
+    /* Remove the existing element */
+    freed_ranges->erase(range);
+    range_t split1(split1_start_val, offset - 1);
+    range_t split2(offset + 1, split2_end_val);
+
+    /* Insert the two elements */
+    freed_ranges->insert(split1);
+    freed_ranges->insert(split2);
+  }
+
+  /** Remove the page from the range.
+  @param[in]	offset	page to be removed. */
+  void remove_free_page(uint32_t offset)
+  {
+    std::lock_guard<std::mutex>	freed_lock(freed_mutex);
+    range_t new_range(offset);
+    auto r_offset = freed_ranges->lower_bound(new_range);
+
+    if (freed_ranges->empty())
+      return;
+
+    if (r_offset == freed_ranges->end())
+    {
+      /* Element could be in first range */
+      auto rlast = freed_ranges->rbegin();
+      uint32_t& last_end_val = (*rlast).last();
+      if (last_end_val == offset)
+        last_end_val--;
+      else if (last_end_val > offset)
+        split_range(*rlast, offset);
+      return;
+    }
+
+    uint32_t& start_val = (*r_offset).first();
+    uint32_t& end_val = (*r_offset).last();
+
+    if (start_val > offset)
+    {
+      /* Iterate the previous ranges to delete */
+      auto prev_last = std::prev(r_offset, 1);
+      uint32_t& prev_last_end= (*prev_last).last();
+      
+      if (prev_last_end == offset)
+        prev_last_end--;
+      else if (prev_last_end > offset)
+        split_range(*prev_last, offset);
+    }
+    else
+    {
+      /* Current range */
+      if (offset == start_val)
+      {
+        if (start_val == end_val)
+          /* Remove the range itself */
+          freed_ranges->erase(*r_offset);
+        else
+          start_val++;
+      } else if (start_val > offset && end_val > offset)
+               split_range(*r_offset, offset);
+    }
+  }
+
+  /** Add the free page to the freed ranges
+  @param[in] offset	page number to be added */
+  void add_free_page(uint32_t offset)
+  {
+    range_t new_range(offset);
+    std::lock_guard<std::mutex>	freed_lock(freed_mutex);
+    auto r_offset = freed_ranges->lower_bound(new_range);
+    auto rlast= freed_ranges->rbegin();
+    auto rend= freed_ranges->rend();
+
+    if (rlast == rend)
+    {
+new_range:
+      freed_ranges->insert(offset);
+      return;
+    }
+
+    if (r_offset == freed_ranges->end() && rlast != rend)
+    {
+      /* First range */
+      uint32_t& last_end_val = (*rlast).last();
+      if (last_end_val + 1 < offset)
+        goto new_range;
+      else if (last_end_val + 1 == offset)
+        last_end_val++;
+      return;
+    }
+
+    uint32_t& start_val= (*r_offset).first();
+    /* Change starting of the existing range */
+    if (start_val - 1 == offset)
+    {
+      start_val--;
+      merge_range(r_offset);
+    }
+    else
+    {
+      /* previous range last_value alone */
+      auto prev_last = std::prev(r_offset, 1);
+      uint32_t& last_val = (*prev_last).last();
+      if (last_val + 1 == offset)
+        last_val++;
+      else
+        goto new_range;
+    }
+  }
+
+#endif /*!UNIV_INNOCHECKSUM */
+
 };
 
 #ifndef UNIV_INNOCHECKSUM

@@ -523,11 +523,18 @@ inline void mtr_t::init(buf_block_t *b)
 }
 
 /** Free a page.
-@param id      page identifier */
-inline void mtr_t::free(const page_id_t id)
+@param[in]	space 	tablespace contains page to be freed
+@param[in]	offset	page offset to be freed */
+inline void mtr_t::free(fil_space_t &space, uint32_t offset)
 {
   if (m_log_mode == MTR_LOG_ALL)
-    m_log.close(log_write<FREE_PAGE>(id, nullptr));
+    m_log.close(log_write<FREE_PAGE>(page_id_t(space.id, offset), nullptr));
+
+  ut_ad(!m_user_space || m_user_space == &space);
+  if (&space == fil_system.sys_space)
+    freed_system_tablespace_page();
+  else
+    m_user_space= &space;
 }
 
 /** Write an EXTENDED log record.

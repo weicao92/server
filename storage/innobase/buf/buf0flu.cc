@@ -1036,7 +1036,7 @@ page status as NORMAL. It initiates the write to the file only after
 releasing the page from flush list and its associated mutex.
 @param[in,out]	bpage	freed buffer page
 @param[in]	space	tablespace object of the freed page */
-static void buf_flush_freed_page(buf_page_t *bpage, fil_space_t *space)
+static void buf_release_freed_page(buf_page_t *bpage, fil_space_t *space)
 {
   ut_ad(buf_page_in_file(bpage));
   const bool uncompressed= buf_page_get_state(bpage) == BUF_BLOCK_FILE_PAGE;
@@ -1057,24 +1057,7 @@ static void buf_flush_freed_page(buf_page_t *bpage, fil_space_t *space)
 
   buf_pool.stat.n_pages_written++;
   mutex_exit(&buf_pool.mutex);
-  const page_id_t page_id(bpage->id);
-  const auto zip_size= bpage->zip_size();
   mutex_exit(block_mutex);
-
-  const bool punch_hole=
-#if defined(HAVE_FALLOC_PUNCH_HOLE_AND_KEEP_SIZE) || defined(_WIN32)
-    space->is_compressed() ||
-#endif
-    false;
-
-  ut_ad(space->id == page_id.space());
-  ut_ad(space->zip_size() == zip_size);
-
-  if (punch_hole || srv_immediate_scrub_data_uncompressed)
-    fil_io(IORequestWrite, punch_hole, page_id, zip_size, 0,
-           zip_size ? zip_size : srv_page_size,
-           const_cast<byte*>(field_ref_zero), nullptr, false, punch_hole);
-
   space->release_for_io();
 }
 
@@ -1174,7 +1157,7 @@ buf_flush_write_block_low(
 	}
 
 	if (bpage->status == buf_page_t::FREED) {
-		buf_flush_freed_page(bpage, space);
+		buf_release_freed_page(bpage, space);
 		return;
 	}
 
@@ -1394,7 +1377,57 @@ buf_flush_check_neighbor(
 	return(ret);
 }
 
-/** Flushes to disk all flushable pages within the flush area.
+/** Get the freed page ranges from fil_space_t and store it in
+local freed range variable. This function protected by freed_mutex
+@param[in,out]	space		tablespace which contains freed ranges
+@param[in,out]	freed_ranges	freed ranges of tablespace pages */
+static void buf_flush_get_freed_pages(fil_space_t* space,
+                                      range_set_t* freed_ranges)
+{
+  ut_ad(space != NULL);
+  lsn_t flush_to_disk_lsn= log_sys.get_flushed_lsn();
+  std::lock_guard<std::mutex> freed_lock(space->freed_mutex);
+  if (space->freed_ranges->size() == 0
+      || flush_to_disk_lsn < space->get_last_freed_lsn())
+    return;
+
+  for (auto r_iter= space->freed_ranges->begin(),
+       rend= space->freed_ranges->end(); r_iter != rend; r_iter++)
+  {
+    range_t new_range(*r_iter);
+    freed_ranges->insert(new_range);
+  }
+  space->freed_ranges->clear();
+}
+
+/** Write punch-hole or zeroes of the freed ranges when
+innodb_immediate_scrub_data_uncompressed from the freed ranges.
+@param[in]	space		tablespace which contains freed ranges
+@param[in]	freed_ranges	freed ranges of the page to be flushed */
+static void buf_flush_freed_pages(fil_space_t* space,
+				  range_set_t* freed_ranges)
+{
+  const bool punch_hole=
+#if defined(HAVE_FALLOC_PUNCH_HOLE_AND_KEEP_SIZE) || defined(_WIN32)
+    space->is_compressed() ||
+#endif
+    false;
+
+  for (auto r_iter= freed_ranges->begin(),
+       rend= freed_ranges->end(); r_iter != rend; r_iter++)
+  {
+    const auto page_size= space->zip_size() ?: srv_page_size;
+    const auto len= (r_iter->last() - r_iter->first() + 1) * page_size;
+    const page_id_t page_id(space->id, r_iter->first());
+    if (punch_hole || srv_immediate_scrub_data_uncompressed)
+      fil_io(IORequestWrite, punch_hole, page_id, space->zip_size(),
+             0, len, const_cast<byte*>(field_ref_zero),
+             nullptr, false, punch_hole);
+  }
+}
+
+/** Flushes to disk all flushable pages within the flush area
+and also write zeroes or punch the hole for the freed ranges of pages.
 @param[in]	page_id		page id
 @param[in]	flush_type	BUF_FLUSH_LRU or BUF_FLUSH_LIST
 @param[in]	n_flushed	number of pages flushed so far in this batch
@@ -1419,6 +1452,14 @@ buf_flush_try_neighbors(
 		return 0;
 	}
 
+	range_set_t space_freed_ranges;
+	/* Get the freed pages from fil_space_t */
+	buf_flush_get_freed_pages(space, &space_freed_ranges);
+
+	/** Flush the freed ranges while flushing the neighbors */
+	buf_flush_freed_pages(space, &space_freed_ranges);
+
+	//space->display_freed_pages();
 	if (UT_LIST_GET_LEN(buf_pool.LRU) < BUF_LRU_OLD_MIN_LEN
 	    || !srv_flush_neighbors || !space->is_rotational()) {
 		/* If there is little space or neighbor flushing is

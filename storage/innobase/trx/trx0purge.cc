@@ -370,6 +370,11 @@ trx_purge_free_segment(trx_rseg_t* rseg, fil_addr_t hdr_addr)
 		       + block->frame, false, &mtr)) {
 		mutex_exit(&rseg->mutex);
 
+		if (rseg->space == fil_system.sys_space)
+		  mtr.freed_system_tablespace_page();
+		else
+		  mtr.set_named_space(rseg->space);
+
 		mtr.commit();
 		mtr.start();
 
