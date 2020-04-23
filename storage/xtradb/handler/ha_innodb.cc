@@ -5,7 +5,7 @@ Copyright (c) 2013, 2018, MariaDB Corporation.
 Copyright (c) 2008, 2009 Google Inc.
 Copyright (c) 2009, Percona Inc.
 Copyright (c) 2012, Facebook Inc.
-Copyright (c) 2013, 2019, MariaDB Corporation.
+Copyright (c) 2013, 2020, MariaDB Corporation.
 
 Portions of this file contain modifications contributed and copyrighted by
 Google, Inc. Those modifications are gratefully acknowledged and are described
@@ -17091,6 +17091,13 @@ innobase_xa_recover(
 	uint		len)	/*!< in: number of slots in xid_list */
 {
 	DBUG_ASSERT(hton == innodb_hton_ptr);
+
+	if (opt_bin_log)
+	{
+		mysql_bin_log.last_commit_pos_offset= trx_sys_mysql_bin_log_pos;
+		strmake_buf(mysql_bin_log.last_commit_pos_file,
+				trx_sys_mysql_bin_log_name);
+	}
 
 	if (len == 0 || xid_list == NULL) {
 

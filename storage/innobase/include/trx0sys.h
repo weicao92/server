@@ -1,7 +1,7 @@
 /*****************************************************************************
 
 Copyright (c) 1996, 2016, Oracle and/or its affiliates. All Rights Reserved.
-Copyright (c) 2017, 2019, MariaDB Corporation.
+Copyright (c) 2017, 2020, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -626,6 +626,10 @@ struct trx_sys_t {
 
 	TrxIdSet	rw_trx_set;	/*!< Mapping from transaction id
 					to transaction instance */
+	/** Latest recovered binlog offset */
+	uint64_t recovered_binlog_offset;
+	/** Latest recovred binlog file name */
+	char recovered_binlog_filename[TRX_SYS_MYSQL_LOG_NAME_LEN];
 };
 
 /** When a trx id which is zero modulo this number (which must be a power of

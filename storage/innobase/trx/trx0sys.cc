@@ -1,7 +1,7 @@
 /*****************************************************************************
 
 Copyright (c) 1996, 2017, Oracle and/or its affiliates. All Rights Reserved.
-Copyright (c) 2017, 2019, MariaDB Corporation.
+Copyright (c) 2017, 2020, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -229,6 +229,13 @@ trx_sys_print_mysql_binlog_offset()
 			<< mach_read_from_8(TRX_SYS_MYSQL_LOG_INFO
 					    + TRX_SYS_MYSQL_LOG_OFFSET
 					    + sys_header);
+	memcpy(trx_sys->recovered_binlog_filename,
+		sys_header + TRX_SYS_MYSQL_LOG_INFO + TRX_SYS_MYSQL_LOG_NAME,
+		TRX_SYS_MYSQL_LOG_NAME_LEN);
+
+	trx_sys->recovered_binlog_offset=
+		mach_read_from_8(sys_header + TRX_SYS_MYSQL_LOG_INFO +
+		TRX_SYS_MYSQL_LOG_OFFSET);
 	}
 
 	mtr.commit();
