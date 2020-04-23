@@ -1763,13 +1763,6 @@ int JOIN::init_join_caches()
       if (!(table->file->index_flags(table->file->keyread, 0, 1) & HA_CLUSTERED_INDEX))
         table->mark_columns_used_by_index(table->file->keyread, table->read_set);
     }
-    else if ((tab->read_first_record == join_read_first ||
-              tab->read_first_record == join_read_last) &&
-             !tab->filesort && table->covering_keys.is_set(tab->index) &&
-             !table->no_keyread)
-    {
-      table->prepare_for_keyread(tab->index, table->read_set);
-    }
     if (tab->cache && tab->cache->init(select_options & SELECT_DESCRIBE))
       revise_cache_usage(tab);
     else
@@ -2995,6 +2988,8 @@ int JOIN::optimize_stage2()
 
   if (make_aggr_tables_info())
     DBUG_RETURN(1);
+
+  enable_keyread_for_tables();
 
   if (init_join_caches())
     DBUG_RETURN(1);
@@ -13114,17 +13109,15 @@ make_join_readinfo(JOIN *join, ulonglong options, uint no_jbuf_after)
       /* Only happens with outer joins */
       tab->read_first_record= tab->type == JT_SYSTEM ? join_read_system
                                                      : join_read_const;
-      if (table->covering_keys.is_set(tab->ref.key) && !table->no_keyread)
-        table->file->ha_start_keyread(tab->ref.key);
-      else if ((!jcl || jcl > 4) && !tab->ref.is_access_triggered())
+      if (!(table->covering_keys.is_set(tab->ref.key) && !table->no_keyread) &&
+          (!jcl || jcl > 4) && !tab->ref.is_access_triggered())
         push_index_cond(tab, tab->ref.key);
       break;
     case JT_EQ_REF:
       tab->read_record.unlock_row= join_read_key_unlock_row;
       /* fall through */
-      if (table->covering_keys.is_set(tab->ref.key) && !table->no_keyread)
-        table->file->ha_start_keyread(tab->ref.key);
-      else if ((!jcl || jcl > 4) && !tab->ref.is_access_triggered())
+      if (!(table->covering_keys.is_set(tab->ref.key) && !table->no_keyread) &&
+          (!jcl || jcl > 4) && !tab->ref.is_access_triggered())
         push_index_cond(tab, tab->ref.key);
       break;
     case JT_REF_OR_NULL:
@@ -13136,9 +13129,8 @@ make_join_readinfo(JOIN *join, ulonglong options, uint no_jbuf_after)
       }
       delete tab->quick;
       tab->quick=0;
-      if (table->covering_keys.is_set(tab->ref.key) && !table->no_keyread)
-        table->file->ha_start_keyread(tab->ref.key);
-      else if ((!jcl || jcl > 4) && !tab->ref.is_access_triggered())
+      if (!(table->covering_keys.is_set(tab->ref.key) && !table->no_keyread) &&
+          (!jcl || jcl > 4) && !tab->ref.is_access_triggered())
         push_index_cond(tab, tab->ref.key);
       break;
     case JT_ALL:
@@ -13197,12 +13189,11 @@ make_join_readinfo(JOIN *join, ulonglong options, uint no_jbuf_after)
 	}
 	if (!table->no_keyread)
 	{
-	  if (tab->select && tab->select->quick &&
-              tab->select->quick->index != MAX_KEY && //not index_merge
-	      table->covering_keys.is_set(tab->select->quick->index))
-            table->file->ha_start_keyread(tab->select->quick->index);
-	  else if (!table->covering_keys.is_clear_all() &&
-		   !(tab->select && tab->select->quick))
+	  if (!(tab->select && tab->select->quick &&
+          tab->select->quick->index != MAX_KEY && //not index_merge
+          table->covering_keys.is_set(tab->select->quick->index)) &&
+          (!table->covering_keys.is_clear_all() &&
+           !(tab->select && tab->select->quick)))
 	  {					// Only read index tree
             if (tab->loosescan_match_tab)
               tab->index= tab->loosescan_key;
@@ -13229,7 +13220,7 @@ make_join_readinfo(JOIN *join, ulonglong options, uint no_jbuf_after)
 	}
         if (tab->select && tab->select->quick &&
             tab->select->quick->index != MAX_KEY &&
-            !tab->table->file->keyread_enabled())
+            !tab->table->covering_keys.is_set(tab->select->quick->index))
           push_index_cond(tab, tab->select->quick->index);
       }
       break;
@@ -23581,15 +23572,6 @@ check_reverse_order:
       bool quick_created= 
         (select && select->quick && select->quick!=save_quick);
 
-      /* 
-         If ref_key used index tree reading only ('Using index' in EXPLAIN),
-         and best_key doesn't, then revert the decision.
-      */
-      if (table->covering_keys.is_set(best_key) && !table->no_keyread)
-        table->file->ha_start_keyread(best_key);
-      else
-        table->file->ha_end_keyread();
-
       if (!quick_created)
       {
         if (select)                  // Throw any existing quick select
@@ -23630,7 +23612,6 @@ check_reverse_order:
           tab->ref.key_parts= 0;
           if (select_limit < table->stat_records())
             tab->limit= select_limit;
-          table->file->ha_end_keyread();
         }
       }
       else if (tab->type != JT_ALL || tab->select->quick)
@@ -23731,14 +23712,6 @@ skipped_filesort:
   {
     delete save_quick;
     save_quick= NULL;
-
-    /*
-      'delete save_quick' disabled key reads. Enable key read if the new
-      index is an covering key
-    */
-    if (select->quick && !select->head->no_keyread &&
-        select->head->covering_keys.is_set(select->quick->index))
-      select->head->file->ha_start_keyread(select->quick->index);
   }
   if (orig_cond_saved && !changed_key)
     tab->set_cond(orig_cond);
@@ -23753,9 +23726,6 @@ use_filesort:
   {
     delete select->quick;
     select->quick= save_quick;
-    if (select->quick && !select->head->no_keyread &&
-        select->head->covering_keys.is_set(select->quick->index))
-      select->head->file->ha_start_keyread(select->quick->index);
   }
   if (orig_cond_saved)
     tab->set_cond(orig_cond);
@@ -28568,7 +28538,6 @@ test_if_cheaper_ordering(const JOIN_TAB *tab, ORDER *order, TABLE *table,
   *new_select_limit= has_limit ? best_select_limit : table_records;
   if (new_used_key_parts != NULL)
     *new_used_key_parts= best_key_parts;
-  table->file->ha_end_keyread();
   DBUG_RETURN(TRUE);
 }
 
@@ -29297,6 +29266,56 @@ void build_notnull_conds_for_inner_nest_of_outer_join(JOIN *join,
         if (false_cond)
           tbl->on_expr= false_cond;
       }
+    }
+  }
+}
+
+
+void JOIN::enable_keyread_for_tables()
+{
+  JOIN_TAB *tab;
+  for (tab= first_linear_tab(this, WITH_BUSH_ROOTS, WITHOUT_CONST_TABLES);
+       tab;
+       tab= next_linear_tab(this, tab, WITH_BUSH_ROOTS))
+  {
+    TABLE *table= tab->table;
+    switch (tab->type) {
+    case JT_SYSTEM:
+    case JT_CONST:
+      break;
+    case JT_EQ_REF:
+    case JT_REF_OR_NULL:
+    case JT_REF:
+      if (table->covering_keys.is_set(tab->ref.key) && !table->no_keyread)
+        table->file->ha_start_keyread(tab->ref.key);
+      break;
+    case JT_HASH:
+    case JT_ALL:
+      SQL_SELECT *select;
+      select= tab->select ? tab->select :
+              (tab->filesort ? tab->filesort->select : NULL);
+      if (select && select->quick && select->quick->index != MAX_KEY &&
+          table->covering_keys.is_set(select->quick->index) &&
+          !table->no_keyread)
+        table->file->ha_start_keyread(select->quick->index);
+      break;
+    case JT_HASH_NEXT:
+    case JT_NEXT:
+      if ((tab->read_first_record == join_read_first ||
+           tab->read_first_record == join_read_last) &&
+           table->covering_keys.is_set(tab->index) &&
+           !table->no_keyread)
+        {
+          DBUG_ASSERT(!tab->filesort);
+          table->prepare_for_keyread(tab->index, table->read_set);
+        }
+      break;
+    case JT_FT:
+    case JT_UNKNOWN:
+    case JT_MAYBE_REF:
+    default:
+      break;
+      /* purecov: end */
     }
   }
 }
