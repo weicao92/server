@@ -1416,7 +1416,10 @@ static void buf_flush_freed_pages(fil_space_t* space,
   for (auto r_iter= freed_ranges->begin(),
        rend= freed_ranges->end(); r_iter != rend; r_iter++)
   {
-    const auto page_size= space->zip_size() ?: srv_page_size;
+    ulint page_size= space->zip_size();
+    if (!page_size)
+      page_size= srv_page_size;
+
     const auto len= (r_iter->last() - r_iter->first() + 1) * page_size;
     const page_id_t page_id(space->id, r_iter->first());
     if (punch_hole || srv_immediate_scrub_data_uncompressed)
