@@ -23,7 +23,11 @@
 #include <m_string.h>
 #include <signal.h>
 
+#ifdef HAVE_NATIVE_TLS_C
+_Thread_local struct st_my_thread_var* THR_KEY_mysys;
+#else
 pthread_key(struct st_my_thread_var*, THR_KEY_mysys);
+#endif
 mysql_mutex_t THR_LOCK_malloc, THR_LOCK_open,
               THR_LOCK_lock, THR_LOCK_myisam, THR_LOCK_heap,
               THR_LOCK_net, THR_LOCK_charset, THR_LOCK_threads,
@@ -44,8 +48,10 @@ static uint get_thread_lib(void);
 
 /** True if @c my_thread_global_init() has been called. */
 static my_bool my_thread_global_init_done= 0;
+#ifndef HAVE_NATIVE_TLS_C
 /* True if THR_KEY_mysys is created */
 my_bool my_thr_key_mysys_exists= 0;
+#endif
 
 
 /*
@@ -161,7 +167,9 @@ void my_thread_global_reinit(void)
 
 my_bool my_thread_global_init(void)
 {
+#ifndef HAVE_NATIVE_TLS_C
   int pth_ret;
+#endif
 
   /* Normally this should never be called twice */
   DBUG_ASSERT(my_thread_global_init_done == 0);
@@ -169,6 +177,7 @@ my_bool my_thread_global_init(void)
     return 0;
   my_thread_global_init_done= 1;
 
+#ifndef HAVE_NATIVE_TLS_C
   /*
     THR_KEY_mysys is deleted in my_end() as DBUG libraries are using it even
     after my_thread_global_end() is called.
@@ -183,6 +192,7 @@ my_bool my_thread_global_init(void)
     return 1;
   }
   my_thr_key_mysys_exists= 1;
+#endif
 
   /* Mutex used by my_thread_init() and after my_thread_destroy_mutex() */
   my_thread_init_internal_mutex();
@@ -391,12 +401,21 @@ void my_thread_end(void)
 
 struct st_my_thread_var *_my_thread_var(void)
 {
+#ifdef HAVE_NATIVE_TLS_C
+  return THR_KEY_mysys;
+#else
   return  my_pthread_getspecific(struct st_my_thread_var*,THR_KEY_mysys);
+#endif
 }
 
 int set_mysys_var(struct st_my_thread_var *mysys_var)
 {
+#ifdef HAVE_NATIVE_TLS_C
+  THR_KEY_mysys= mysys_var;
+  return 0;
+#else
   return my_pthread_setspecific_ptr(THR_KEY_mysys, mysys_var);
+#endif
 }
 
 /****************************************************************************
