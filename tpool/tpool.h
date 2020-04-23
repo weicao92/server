@@ -233,6 +233,8 @@ public:
   int submit_io(aiocb *cb) { return m_aio->submit_io(cb); }
   virtual void wait_begin() {};
   virtual void wait_end() {};
+  virtual void set_concurrency(unsigned int n){};
+  virtual void set_max_threads(unsigned int n){};
   virtual ~thread_pool() {}
 };
 const int DEFAULT_MIN_POOL_THREADS= 1;

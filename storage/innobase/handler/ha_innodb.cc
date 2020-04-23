@@ -19638,6 +19638,26 @@ static MYSQL_SYSVAR_ULONG(concurrency_tickets, srv_n_free_tickets_to_enter,
   "Number of times a thread is allowed to enter InnoDB within the same SQL query after it has once got the ticket",
   NULL, NULL, 5000L, 1L, ~0UL, 0);
 
+extern uint innodb_background_pool_concurrency;
+extern void srv_update_background_pool_concurrency(THD*, st_mysql_sys_var*, void*,
+  const void* save);
+static MYSQL_SYSVAR_UINT(background_pool_concurrency,
+  innodb_background_pool_concurrency,
+  PLUGIN_VAR_RQCMDARG,
+  "Desired maximum number of parallel running (on CPU) tasks in the background "
+  "thread pool. Use 0 for automatic setting",
+  0, srv_update_background_pool_concurrency, 0, 0, 1000, 0);
+
+extern uint innodb_background_pool_max_threads;
+extern void srv_update_background_pool_max_threads(THD*, st_mysql_sys_var*, void*,
+  const void* save);
+static MYSQL_SYSVAR_UINT(background_pool_max_threads,
+  innodb_background_pool_max_threads,
+  PLUGIN_VAR_RQCMDARG,
+  "Maximum number of threads in the background thread pool"
+  "Use 0 for automatic setting",
+  0, srv_update_background_pool_max_threads, 0, 0, 1000, 0);
+
 static MYSQL_SYSVAR_BOOL(deadlock_detect, innobase_deadlock_detect,
   PLUGIN_VAR_NOCMDARG,
   "Enable/disable InnoDB deadlock detector (default ON)."
@@ -20432,7 +20452,8 @@ static struct st_mysql_sys_var* innobase_system_variables[]= {
   MYSQL_SYSVAR(buf_dump_status_frequency),
   MYSQL_SYSVAR(background_thread),
   MYSQL_SYSVAR(encrypt_temporary_tables),
-
+  MYSQL_SYSVAR(background_pool_concurrency),
+  MYSQL_SYSVAR(background_pool_max_threads),
   NULL
 };
 

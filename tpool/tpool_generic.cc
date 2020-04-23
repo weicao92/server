@@ -192,7 +192,6 @@ class thread_pool_generic : public thread_pool
 
   /** Overall number of enqueues*/
   unsigned long long m_tasks_enqueued;
-  unsigned long long m_group_enqueued;
   /** Overall number of dequeued tasks. */
   unsigned long long m_tasks_dequeued;
 
@@ -263,6 +262,14 @@ public:
   void wait_begin() override;
   void wait_end() override;
   void submit_task(task *task) override;
+  void set_concurrency(unsigned int n) override
+  {
+    m_concurrency = n;
+  }
+  void set_max_threads(unsigned int n) override
+  {
+    m_max_threads = n;
+  }
   virtual aio *create_native_aio(int max_io) override
   {
 #ifdef _WIN32

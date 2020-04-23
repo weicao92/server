@@ -1,0 +1,10 @@
+SET @start_global_value = @@global.innodb_background_pool_concurrency;
+SET GLOBAL innodb_background_pool_concurrency = 1;
+SELECT @@global.innodb_background_pool_concurrency;
+@@global.innodb_background_pool_concurrency
+0
+SET GLOBAL innodb_background_pool_concurrency = 1000;
+SELECT @@global.innodb_background_pool_concurrency;
+@@global.innodb_background_pool_concurrency
+0
+SET GLOBAL innodb_background_pool_concurrency = @start_global_value;

@@ -704,6 +704,9 @@ static void dbug_after_task_callback()
 }
 #endif
 
+uint innodb_background_pool_concurrency;
+uint innodb_background_pool_max_threads;
+
 void srv_thread_pool_init()
 {
   DBUG_ASSERT(!srv_thread_pool);
@@ -718,8 +721,25 @@ void srv_thread_pool_init()
 #ifndef DBUG_OFF
   tpool::set_after_task_callback(dbug_after_task_callback);
 #endif
+  if (innodb_background_pool_concurrency)
+    srv_thread_pool->set_concurrency(innodb_background_pool_concurrency);
+  if (innodb_background_pool_max_threads)
+    srv_thread_pool->set_max_threads(innodb_background_pool_max_threads);
 }
 
+void
+srv_update_background_pool_concurrency(THD*, st_mysql_sys_var*, void*,
+  const void* save)
+{
+  srv_thread_pool->set_concurrency(*static_cast<const uint*>(save));
+}
+
+void
+srv_update_background_pool_max_threads(THD*, st_mysql_sys_var*, void*,
+  const void* save)
+{
+  srv_thread_pool->set_max_threads(*static_cast<const uint*>(save));
+}
 
 void srv_thread_pool_end()
 {
