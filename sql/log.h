@@ -43,7 +43,8 @@ bool stmt_has_updated_non_trans_table(const THD* thd);
 class TC_LOG
 {
   public:
-  int using_heuristic_recover();
+  int using_heuristic_recover(const char* opt_name);
+  virtual int heuristic_binlog_rollback() { return 0; };
   TC_LOG() {}
   virtual ~TC_LOG() {}
 
@@ -713,6 +714,7 @@ public:
   void commit_checkpoint_notify(void *cookie);
   int recover(LOG_INFO *linfo, const char *last_log_name, IO_CACHE *first_log,
               Format_description_log_event *fdle, bool do_xa);
+  int heuristic_binlog_rollback();
   int do_binlog_recovery(const char *opt_name, bool do_xa_recovery);
 #if !defined(MYSQL_CLIENT)
 
@@ -858,6 +860,9 @@ public:
   int purge_first_log(Relay_log_info* rli, bool included);
   int set_purge_index_file_name(const char *base_file_name);
   int open_purge_index_file(bool destroy);
+  bool truncate_and_remove_binlogs(const char *truncate_file,
+                                   my_off_t truncate_pos);
+  int get_binlog_checkpoint_file(char* checkpoint_file);
   bool is_inited_purge_index_file();
   int close_purge_index_file();
   int clean_purge_index_file();
@@ -951,6 +956,11 @@ public:
   */
   my_off_t binlog_end_pos;
   char binlog_end_pos_file[FN_REFLEN];
+  /*
+    Count of hton->recover() calls that increment "binlog_pos_aware_htons"
+    variable.
+  */
+  uint binlog_pos_aware_htons;
 };
 
 class Log_event_handler

@@ -17185,6 +17185,13 @@ innobase_xa_recover(
 {
 	DBUG_ASSERT(hton == innodb_hton_ptr);
 
+	if (opt_bin_log)
+	{
+		mysql_bin_log.last_commit_pos_offset= trx_sys.recovered_binlog_offset;
+		strmake_buf(mysql_bin_log.last_commit_pos_file,
+			trx_sys.recovered_binlog_filename);
+		mysql_bin_log.binlog_pos_aware_htons++;
+	}
 	if (len == 0 || xid_list == NULL) {
 
 		return(0);

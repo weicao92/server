@@ -1971,8 +1971,20 @@ static my_bool xarecover_handlerton(THD *unused, plugin_ref plugin,
 
   if (hton->state == SHOW_OPTION_YES && hton->recover)
   {
+    bool tc_rb=
+      opt_bin_log && tc_heuristic_recover == TC_HEURISTIC_RECOVER_ROLLBACK;
+    uint binlog_pos_aware= mysql_bin_log.binlog_pos_aware_htons;
+
     while ((got= hton->recover(hton, info->list, info->len)) > 0 )
     {
+      if (tc_rb && binlog_pos_aware == mysql_bin_log.binlog_pos_aware_htons)
+      {
+        sql_print_warning("Heuristic crash recovery of binlog may not fully "
+                          "succeed because plugin %s does not support that.",
+                          hton_name(hton)->str);
+
+      }
+
       sql_print_information("Found %d prepared transaction(s) in %s",
                             got, hton_name(hton)->str);
 #ifdef WITH_WSREP

@@ -1,0 +1,130 @@
+# ==== Purpose ====
+#
+# Test case verifies no binlog truncation happens when non transactional
+# events are found in binlog after the last committed transaction.
+#
+# ==== Implementation ====
+#
+# Steps:
+#    0 - Set max_binlog_size= 4096. Create a table and do an insert such that
+#        the max_binlog_size is reached and binary log gets rotated.
+#    1 - Create a table in newly created binary log and crash the server
+#    2 - Restart server with --tc-heuristic-recover=ROLLBACK
+#    3 - Recovery code will get the last committed DML specific postion and
+#        will try to check if binlog can be truncated upto this position.
+#        Since a DDL is present beyond this no truncation will happen.
+# ==== References ====
+#
+# MDEV-21117: --tc-heuristic-recover=rollback is not replication safe
+
+
+--source include/have_innodb.inc
+--source include/have_log_bin.inc
+--source include/have_debug.inc
+--source include/have_binlog_format_row.inc
+
+SET @old_max_binlog_size= @@global.max_binlog_size;
+SET GLOBAL max_binlog_size= 4096;
+
+call mtr.add_suppression("Can't init tc log");
+call mtr.add_suppression("Aborting");
+
+RESET MASTER;
+
+CREATE TABLE t1 (a INT PRIMARY KEY, b MEDIUMTEXT) ENGINE=Innodb;
+INSERT INTO t1 VALUES (1, REPEAT("x", 4100));
+CREATE TABLE t2 (a INT PRIMARY KEY, b MEDIUMTEXT) ENGINE=Innodb;
+--source include/show_binary_logs.inc
+
+--write_file $MYSQLTEST_VARDIR/tmp/mysqld.1.expect
+wait
+EOF
+
+--source include/kill_mysqld.inc
+--source include/wait_until_disconnected.inc
+
+#
+# Server restart
+#
+--append_file $MYSQLTEST_VARDIR/tmp/mysqld.1.expect
+restart: --tc-heuristic-recover=ROLLBACK
+EOF
+--source include/wait_until_disconnected.inc
+
+--append_file $MYSQLTEST_VARDIR/tmp/mysqld.1.expect
+restart:
+EOF
+
+connection default;
+--enable_reconnect
+--source include/wait_until_connected_again.inc
+
+--echo "Zero records should be there."
+SELECT COUNT(*) FROM t1;
+--source include/show_binary_logs.inc
+DROP TABLE t1,t2;
+
+# ==== Purpose ====
+#
+# Test case verifies no binlog truncation happens when only DDLs are present in
+# the binary log. Since none of the DMLs are performed in storage engine,
+# Engine will not have last committed transaction file name or position.
+# Truncation code should return success.
+#
+# ==== Implementation ====
+#
+# Steps:
+#    0 - Create two table t1, t2
+#    1 - Kill and restart server with --tc-heuristic-recover=ROLLBACK
+#    2 - Only DDL statements are present in the binary log. Since
+#        no DML was performed engine will not have last commited transaction
+#        specific binary log name and position. Since no transactional events
+#        are found, truncation code should simply return.
+#
+# ==== References ====
+#
+# MDEV-21117: --tc-heuristic-recover=rollback is not replication safe
+
+
+--source include/have_innodb.inc
+--source include/have_log_bin.inc
+--source include/have_debug.inc
+--source include/have_binlog_format_row.inc
+
+call mtr.add_suppression("Can't init tc log");
+call mtr.add_suppression("Aborting");
+
+RESET MASTER;
+
+CREATE TABLE t1 (a INT PRIMARY KEY, b MEDIUMTEXT) ENGINE=Innodb;
+CREATE TABLE t2 (a INT PRIMARY KEY, b MEDIUMTEXT) ENGINE=Innodb;
+--source include/show_binary_logs.inc
+
+--write_file $MYSQLTEST_VARDIR/tmp/mysqld.1.expect
+wait
+EOF
+
+--source include/kill_mysqld.inc
+--source include/wait_until_disconnected.inc
+
+#
+# Server restart
+#
+--append_file $MYSQLTEST_VARDIR/tmp/mysqld.1.expect
+restart: --tc-heuristic-recover=ROLLBACK --debug-dbug=d,simulate_innodb_forget_commit_pos
+EOF
+--source include/wait_until_disconnected.inc
+
+--append_file $MYSQLTEST_VARDIR/tmp/mysqld.1.expect
+restart:
+EOF
+
+connection default;
+--enable_reconnect
+--source include/wait_until_connected_again.inc
+
+--echo "Zero records should be there."
+SELECT COUNT(*) FROM t1;
+SHOW TABLES;
+DROP TABLE t1,t2;
+
