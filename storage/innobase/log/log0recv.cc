@@ -2,7 +2,7 @@
 
 Copyright (c) 1997, 2017, Oracle and/or its affiliates. All Rights Reserved.
 Copyright (c) 2012, Facebook Inc.
-Copyright (c) 2013, 2019, MariaDB Corporation.
+Copyright (c) 2013, 2020, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -3301,7 +3301,8 @@ void
 recv_recovery_from_checkpoint_finish(void)
 /*======================================*/
 {
-	if (recv_needed_recovery) {
+	extern MYSQL_PLUGIN_IMPORT bool opt_bin_log;
+	if (opt_bin_log) {
 		trx_sys_print_mysql_master_log_pos();
 		trx_sys_print_mysql_binlog_offset();
 	}
