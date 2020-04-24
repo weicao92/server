@@ -1,7 +1,7 @@
 IF(NOT MSVC)
   RETURN()
 ENDIF()
-IF(CMAKE_C_COMPILER_ID MATCHES Clang)
+IF(CMAKE_C_COMPILER_ID MATCHES Clang OR WITH_ASAN)
   # MFC stuff does not compile with clang
   RETURN()
 ENDIF()

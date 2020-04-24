@@ -280,7 +280,7 @@ xb_stream_write_eof(xb_wstream_file_t *file)
 	xb_ad(ptr <= tmpbuf + sizeof(tmpbuf));
 
 	if (file->write(file, file->userdata, tmpbuf,
-			(ulonglong) (ptr - tmpbuf)) == -1)
+			(size_t) (ptr - tmpbuf)) == -1)
 		goto err;
 
 	pthread_mutex_unlock(&stream->mutex);
