@@ -111,6 +111,7 @@ env:
   - CC_VERSION=7 TYPE=RelWithDebInfo MYSQL_TEST_SUITES=binlog,binlog_encryption,encryption,rocksdb,versioning,rpl
   - CC_VERSION=7 TYPE=RelWithDebInfo MYSQL_TEST_SUITES=csv,federated,funcs_1,funcs_2,gcol,handler,heap,json,maria,perfschema,plugins,multi_source,roles
   - CC_VERSION=8 TYPE=RelWithDebInfo MYSQL_TEST_SUITES=main
+  - CC_VERSION=5 TYPE=RelWithDebInfo MYSQL_TEST_SUITES=main
 
 jobs:
   # Define extra jobs that are run in addition to the main jobs matrix
@@ -154,7 +155,7 @@ jobs:
     - os: linux
       arch: s390x
       compiler: gcc
-      env: CC_VERSION=8 TYPE=RelWithDebInfo MYSQL_TEST_SUITES=main
+      env: CC_VERSION=5 TYPE=RelWithDebInfo MYSQL_TEST_SUITES=main
     - os: linux
       arch: s390x
       compiler: gcc
